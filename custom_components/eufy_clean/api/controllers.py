@@ -19,6 +19,12 @@ from ..const import (
     LEGACY_DPS_MAP,
     NOVEL_DPS_MAP,
 )
+from .proto_utils import (
+    decode_clean_speed,
+    decode_error_code,
+    decode_work_status,
+    is_base64_encoded,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,6 +94,9 @@ class BaseDevice:
         """Get current clean speed."""
         speed = self._robovac_data.get("CLEAN_SPEED", "standard")
         
+        if self._novel_api and isinstance(speed, str) and is_base64_encoded(speed):
+            return decode_clean_speed(speed)
+        
         if isinstance(speed, int) or (isinstance(speed, str) and len(speed) == 1):
             try:
                 speed_index = int(speed)
@@ -105,14 +114,9 @@ class BaseDevice:
         """Get current work status."""
         status = self._robovac_data.get("WORK_STATUS", "")
         
-        if self._novel_api and status:
-            # For novel API, decode the protobuf status
-            # Simplified version - just return raw status
-            try:
-                if isinstance(status, str):
-                    return status.lower()
-            except Exception:
-                pass
+        if self._novel_api and isinstance(status, str) and is_base64_encoded(status):
+            decoded = decode_work_status(status)
+            return decoded.get("state", "charging")
         
         if isinstance(status, str):
             return status.lower()
@@ -122,6 +126,10 @@ class BaseDevice:
     def get_work_mode(self) -> str:
         """Get current work mode."""
         mode = self._robovac_data.get("WORK_MODE", "")
+        
+        if self._novel_api and isinstance(mode, str) and is_base64_encoded(mode):
+            decoded = decode_work_status(mode)
+            return decoded.get("mode", "auto")
         
         if isinstance(mode, str):
             return mode.lower()
@@ -133,7 +141,22 @@ class BaseDevice:
         work_status = self.get_work_status()
         work_mode = self.get_work_mode()
         
-        state = EUFY_CLEAN_GET_STATE.get(work_status)
+        # Map novel API states to HA states
+        state_map = {
+            "standby": "docked",
+            "sleep": "idle",
+            "fault": "error",
+            "charging": "docked",
+            "fast_mapping": "cleaning",
+            "cleaning": "cleaning",
+            "remote_ctrl": "cleaning",
+            "go_home": "returning",
+            "cruising": "cleaning",
+        }
+        
+        state = state_map.get(work_status)
+        if not state:
+            state = EUFY_CLEAN_GET_STATE.get(work_status)
         if not state:
             state = EUFY_CLEAN_GET_STATE.get(work_mode, "idle")
         
@@ -143,6 +166,20 @@ class BaseDevice:
         """Get current error code."""
         error = self._robovac_data.get("ERROR_CODE", 0)
         
+        if self._novel_api and isinstance(error, str) and is_base64_encoded(error):
+            decoded = decode_error_code(error)
+            error_text = decoded.get("error_text", "none")
+            
+            # Try to get human-readable error
+            if decoded.get("errors"):
+                error_code = decoded["errors"][0]
+                return EUFY_CLEAN_ERROR_CODES.get(error_code, error_text)
+            elif decoded.get("warnings"):
+                warn_code = decoded["warnings"][0]
+                return EUFY_CLEAN_ERROR_CODES.get(warn_code, error_text)
+            
+            return error_text
+        
         if isinstance(error, int):
             return EUFY_CLEAN_ERROR_CODES.get(error, f"unknown_error_{error}")
         
@@ -150,12 +187,13 @@ class BaseDevice:
 
     def is_charging(self) -> bool:
         """Check if device is charging."""
-        return self.get_work_status() == "charging"
+        work_status = self.get_work_status()
+        return work_status in ("charging", "standby")
 
     def is_docked(self) -> bool:
         """Check if device is docked."""
         state = self.get_state()
-        return state in ("docked", "idle")
+        return state in ("docked", "idle", "charging")
 
     async def connect(self) -> None:
         """Connect to device."""

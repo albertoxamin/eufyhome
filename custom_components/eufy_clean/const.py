@@ -73,7 +73,7 @@ EUFY_CLEAN_DEVICES: Final = {
     "T2353": "Robovac E25",
 }
 
-# State mappings
+# State mappings (for legacy API)
 EUFY_CLEAN_GET_STATE: Final = {
     "sleeping": "idle",
     "standby": "docked",
@@ -86,6 +86,19 @@ EUFY_CLEAN_GET_STATE: Final = {
     "sleep": "idle",
     "go_home": "returning",
     "fault": "error",
+}
+
+# Novel API state mappings
+EUFY_CLEAN_NOVEL_STATE_MAP: Final = {
+    "standby": "docked",
+    "sleep": "idle",
+    "fault": "error",
+    "charging": "docked",
+    "fast_mapping": "cleaning",
+    "cleaning": "cleaning",
+    "remote_ctrl": "cleaning",
+    "go_home": "returning",
+    "cruising": "cleaning",
 }
 
 # Work status mappings
