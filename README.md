@@ -15,6 +15,11 @@ A Home Assistant custom integration for Eufy robot vacuums. This integration is 
 - View work status and mode
 - Error monitoring
 - Locate your vacuum
+- **Mopping support** (for compatible models):
+  - Clean type: Sweep Only, Mop Only, Sweep and Mop
+  - Mop water level: Low, Medium, High
+  - Clean intensity: Standard, Deep Clean, Quick Clean
+- **Map camera** - View your vacuum's map as an image
 
 ## Supported Devices
 
@@ -102,6 +107,16 @@ The main vacuum entity provides the following features:
 ### Button Entities
 
 - **Locate**: Make the vacuum beep to help locate it
+
+### Select Entities (Mopping Models Only)
+
+- **Clean Type**: Choose between Sweep Only, Mop Only, or Sweep and Mop
+- **Mop Water Level**: Set the water level for mopping (Low, Medium, High)
+- **Clean Intensity**: Set cleaning intensity (Standard, Deep Clean, Quick Clean)
+
+### Camera Entity
+
+- **Map**: View your vacuum's floor map as an image (requires Pillow and lz4 libraries)
 
 ## Troubleshooting
 

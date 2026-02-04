@@ -362,3 +362,68 @@ CONTROL_START_GOHOME = 6
 CONTROL_STOP_TASK = 12
 CONTROL_PAUSE_TASK = 13
 CONTROL_RESUME_TASK = 14
+
+# Clean type constants
+CLEAN_TYPE_SWEEP_ONLY = 0
+CLEAN_TYPE_MOP_ONLY = 1
+CLEAN_TYPE_SWEEP_AND_MOP = 2
+CLEAN_TYPE_SWEEP_THEN_MOP = 3
+
+# Mop level constants
+MOP_LEVEL_LOW = 0
+MOP_LEVEL_MEDIUM = 1
+MOP_LEVEL_HIGH = 2
+
+# Clean extent constants
+CLEAN_EXTENT_NORMAL = 0
+CLEAN_EXTENT_NARROW = 1  # Deep clean
+CLEAN_EXTENT_QUICK = 2
+
+
+def encode_clean_param(
+    clean_type: int | None = None,
+    mop_level: int | None = None,
+    clean_extent: int | None = None,
+    clean_times: int = 1,
+) -> str:
+    """
+    Encode CleanParamRequest protobuf message.
+    
+    CleanParamRequest structure:
+    - field 1: clean_param (CleanParam message)
+    
+    CleanParam structure:
+    - field 1: clean_type (CleanType message with field 1 = value enum)
+    - field 3: clean_extent (CleanExtent message with field 1 = value enum)
+    - field 4: mop_mode (MopMode message with field 1 = level enum)
+    - field 7: clean_times (uint32)
+    """
+    # Build CleanParam message
+    clean_param = b''
+    
+    # Field 1: clean_type
+    if clean_type is not None:
+        # CleanType message: field 1 = value (enum)
+        clean_type_msg = encode_protobuf_field(1, 0, clean_type)
+        clean_param += encode_protobuf_field(1, 2, clean_type_msg)
+    
+    # Field 3: clean_extent
+    if clean_extent is not None:
+        clean_extent_msg = encode_protobuf_field(1, 0, clean_extent)
+        clean_param += encode_protobuf_field(3, 2, clean_extent_msg)
+    
+    # Field 4: mop_mode
+    if mop_level is not None:
+        mop_mode_msg = encode_protobuf_field(1, 0, mop_level)
+        clean_param += encode_protobuf_field(4, 2, mop_mode_msg)
+    
+    # Field 7: clean_times
+    clean_param += encode_protobuf_field(7, 0, clean_times)
+    
+    # Build CleanParamRequest message
+    message = encode_protobuf_field(1, 2, clean_param)
+    
+    # Add length prefix (delimited format)
+    result = encode_varint(len(message)) + message
+    
+    return base64.b64encode(result).decode()

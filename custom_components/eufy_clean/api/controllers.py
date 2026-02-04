@@ -24,12 +24,22 @@ from .proto_utils import (
     decode_error_code,
     decode_work_status,
     encode_control_command,
+    encode_clean_param,
     is_base64_encoded,
     CONTROL_START_AUTO_CLEAN,
     CONTROL_START_GOHOME,
     CONTROL_STOP_TASK,
     CONTROL_PAUSE_TASK,
     CONTROL_RESUME_TASK,
+    CLEAN_TYPE_SWEEP_ONLY,
+    CLEAN_TYPE_MOP_ONLY,
+    CLEAN_TYPE_SWEEP_AND_MOP,
+    MOP_LEVEL_LOW,
+    MOP_LEVEL_MEDIUM,
+    MOP_LEVEL_HIGH,
+    CLEAN_EXTENT_NORMAL,
+    CLEAN_EXTENT_NARROW,
+    CLEAN_EXTENT_QUICK,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -266,6 +276,64 @@ class BaseDevice:
     async def locate(self) -> None:
         """Locate the vacuum."""
         await self.send_command({self._dps_map["FIND_ROBOT"]: True})
+
+    async def set_clean_type(self, clean_type: str) -> None:
+        """Set cleaning type (sweep_only, mop_only, sweep_and_mop)."""
+        if not self._novel_api:
+            _LOGGER.warning("Clean type not supported on legacy devices")
+            return
+        
+        type_map = {
+            "sweep_only": CLEAN_TYPE_SWEEP_ONLY,
+            "mop_only": CLEAN_TYPE_MOP_ONLY,
+            "sweep_and_mop": CLEAN_TYPE_SWEEP_AND_MOP,
+        }
+        
+        clean_type_value = type_map.get(clean_type.lower())
+        if clean_type_value is not None:
+            command = encode_clean_param(clean_type=clean_type_value)
+            await self.send_command({self._dps_map["CLEANING_PARAMETERS"]: command})
+        else:
+            _LOGGER.error("Invalid clean type: %s", clean_type)
+
+    async def set_mop_level(self, level: str) -> None:
+        """Set mop water level (low, medium, high)."""
+        if not self._novel_api:
+            _LOGGER.warning("Mop level not supported on legacy devices")
+            return
+        
+        level_map = {
+            "low": MOP_LEVEL_LOW,
+            "medium": MOP_LEVEL_MEDIUM,
+            "high": MOP_LEVEL_HIGH,
+        }
+        
+        mop_level_value = level_map.get(level.lower())
+        if mop_level_value is not None:
+            command = encode_clean_param(mop_level=mop_level_value)
+            await self.send_command({self._dps_map["CLEANING_PARAMETERS"]: command})
+        else:
+            _LOGGER.error("Invalid mop level: %s", level)
+
+    async def set_clean_extent(self, extent: str) -> None:
+        """Set cleaning extent/intensity (normal, narrow/deep, quick)."""
+        if not self._novel_api:
+            _LOGGER.warning("Clean extent not supported on legacy devices")
+            return
+        
+        extent_map = {
+            "normal": CLEAN_EXTENT_NORMAL,
+            "narrow": CLEAN_EXTENT_NARROW,
+            "deep": CLEAN_EXTENT_NARROW,
+            "quick": CLEAN_EXTENT_QUICK,
+        }
+        
+        extent_value = extent_map.get(extent.lower())
+        if extent_value is not None:
+            command = encode_clean_param(clean_extent=extent_value)
+            await self.send_command({self._dps_map["CLEANING_PARAMETERS"]: command})
+        else:
+            _LOGGER.error("Invalid clean extent: %s", extent)
 
 
 class CloudDevice(BaseDevice):

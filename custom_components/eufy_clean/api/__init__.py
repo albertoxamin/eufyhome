@@ -6,6 +6,7 @@ from .proto_utils import (
     decode_error_code,
     decode_clean_speed,
     encode_control_command,
+    encode_clean_param,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "decode_error_code",
     "decode_clean_speed",
     "encode_control_command",
+    "encode_clean_param",
 ]
