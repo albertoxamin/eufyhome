@@ -76,10 +76,6 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         for description in SENSOR_DESCRIPTIONS:
             entities.append(EufyCleanSensor(coordinator, device, description))
-        
-        # Add binary-like sensors
-        entities.append(EufyCleanChargingSensor(coordinator, device))
-        entities.append(EufyCleanDockedSensor(coordinator, device))
 
     async_add_entities(entities)
 
@@ -120,88 +116,6 @@ class EufyCleanSensor(CoordinatorEntity[EufyCleanDataUpdateCoordinator], SensorE
                 self.coordinator.data[self._device.device_id]
             )
         return None
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()
-
-
-class EufyCleanChargingSensor(CoordinatorEntity[EufyCleanDataUpdateCoordinator], SensorEntity):
-    """Sensor for charging status."""
-
-    _attr_has_entity_name = True
-    _attr_name = "Charging"
-    _attr_icon = "mdi:battery-charging"
-
-    def __init__(
-        self,
-        coordinator: EufyCleanDataUpdateCoordinator,
-        device: BaseDevice,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._device = device
-        self._attr_unique_id = f"{device.device_id}_is_charging"
-        
-        model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.device_name or f"Eufy {model_name}",
-            manufacturer=MANUFACTURER,
-            model=model_name,
-            sw_version=device.device_model,
-        )
-
-    @property
-    def native_value(self) -> str:
-        """Return the state of the sensor."""
-        if self.coordinator.data and self._device.device_id in self.coordinator.data:
-            is_charging = self.coordinator.data[self._device.device_id].get("is_charging", False)
-            return "Charging" if is_charging else "Not Charging"
-        return "Unknown"
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
-        self.async_write_ha_state()
-
-
-class EufyCleanDockedSensor(CoordinatorEntity[EufyCleanDataUpdateCoordinator], SensorEntity):
-    """Sensor for docked status."""
-
-    _attr_has_entity_name = True
-    _attr_name = "Docked"
-    _attr_icon = "mdi:home"
-
-    def __init__(
-        self,
-        coordinator: EufyCleanDataUpdateCoordinator,
-        device: BaseDevice,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator)
-        self._device = device
-        self._attr_unique_id = f"{device.device_id}_is_docked"
-        
-        model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.device_name or f"Eufy {model_name}",
-            manufacturer=MANUFACTURER,
-            model=model_name,
-            sw_version=device.device_model,
-        )
-
-    @property
-    def native_value(self) -> str:
-        """Return the state of the sensor."""
-        if self.coordinator.data and self._device.device_id in self.coordinator.data:
-            is_docked = self.coordinator.data[self._device.device_id].get("is_docked", False)
-            return "Docked" if is_docked else "Not Docked"
-        return "Unknown"
 
     @callback
     def _handle_coordinator_update(self) -> None:
