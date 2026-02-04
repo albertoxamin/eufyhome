@@ -93,8 +93,15 @@ The main vacuum entity provides the following features:
 - **Work Mode**: Current work mode (auto, room, spot, etc.)
 - **Clean Speed**: Current fan speed setting
 - **Error**: Current error code (if any)
+
+### Binary Sensor Entities
+
 - **Charging**: Whether the vacuum is currently charging
 - **Docked**: Whether the vacuum is currently docked
+
+### Button Entities
+
+- **Locate**: Make the vacuum beep to help locate it
 
 ## Troubleshooting
 
