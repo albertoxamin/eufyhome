@@ -1,0 +1,47 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Eufy Clean Account",
+        "description": "Enter your Eufy account credentials.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Eufy Clean",
+        "description": "Your session has expired. Please re-enter your credentials.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Eufy servers",
+      "no_devices": "No vacuum devices found in your account",
+      "invalid_auth": "Invalid authentication"
+    },
+    "abort": {
+      "already_configured": "Account is already configured",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "work_status": {
+        "name": "Work Status"
+      },
+      "work_mode": {
+        "name": "Work Mode"
+      },
+      "clean_speed": {
+        "name": "Clean Speed"
+      },
+      "error_code": {
+        "name": "Error"
+      }
+    }
+  }
+}

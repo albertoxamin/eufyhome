@@ -1,0 +1,21 @@
+# Services for Eufy Clean integration
+# Note: Standard vacuum services are used (vacuum.start, vacuum.stop, etc.)
+# This file is for any custom services that might be added in the future
+
+# Example custom service (not yet implemented):
+# scene_clean:
+#   name: Start Scene Clean
+#   description: Start cleaning with a predefined scene
+#   target:
+#     entity:
+#       integration: eufy_clean
+#       domain: vacuum
+#   fields:
+#     scene_id:
+#       name: Scene ID
+#       description: The scene ID to use (1-10)
+#       required: true
+#       selector:
+#         number:
+#           min: 1
+#           max: 10

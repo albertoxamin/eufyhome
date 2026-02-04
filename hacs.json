@@ -1,0 +1,7 @@
+{
+  "name": "Eufy Clean",
+  "homeassistant": "2024.1.0",
+  "render_readme": true,
+  "domains": ["vacuum", "sensor"],
+  "iot_class": "cloud_polling"
+}
