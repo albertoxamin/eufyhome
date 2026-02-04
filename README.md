@@ -1,6 +1,8 @@
 # Eufy Clean for Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![GitHub Release](https://img.shields.io/github/release/albertoxamin/eufyhome.svg)](https://github.com/albertoxamin/eufyhome/releases)
+[![GitHub Activity](https://img.shields.io/github/commit-activity/y/albertoxamin/eufyhome.svg)](https://github.com/albertoxamin/eufyhome/commits/main)
 
 A Home Assistant custom integration for Eufy robot vacuums. This integration is based on the [Homey Eufy Clean integration](https://github.com/martijnpoppen/com.eufylife.home) and uses the [eufy-clean SDK](https://github.com/martijnpoppen/eufy-clean).
 
