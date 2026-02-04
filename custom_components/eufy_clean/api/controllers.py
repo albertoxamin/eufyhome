@@ -23,7 +23,13 @@ from .proto_utils import (
     decode_clean_speed,
     decode_error_code,
     decode_work_status,
+    encode_control_command,
     is_base64_encoded,
+    CONTROL_START_AUTO_CLEAN,
+    CONTROL_START_GOHOME,
+    CONTROL_STOP_TASK,
+    CONTROL_PAUSE_TASK,
+    CONTROL_RESUME_TASK,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -210,8 +216,11 @@ class BaseDevice:
     async def start(self) -> None:
         """Start cleaning."""
         if self._novel_api:
-            # Encode control command for novel API
-            command = self._encode_control_command(EUFY_CLEAN_CONTROL["START_AUTO_CLEAN"])
+            # Encode control command for novel API using protobuf
+            command = encode_control_command(
+                CONTROL_START_AUTO_CLEAN, 
+                {"clean_times": 1}
+            )
             await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         else:
             await self.send_command({self._dps_map["WORK_MODE"]: "auto"})
@@ -220,7 +229,7 @@ class BaseDevice:
     async def pause(self) -> None:
         """Pause cleaning."""
         if self._novel_api:
-            command = self._encode_control_command(EUFY_CLEAN_CONTROL["PAUSE_TASK"])
+            command = encode_control_command(CONTROL_PAUSE_TASK)
             await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         else:
             await self.send_command({self._dps_map["PLAY_PAUSE"]: False})
@@ -228,7 +237,7 @@ class BaseDevice:
     async def stop(self) -> None:
         """Stop cleaning."""
         if self._novel_api:
-            command = self._encode_control_command(EUFY_CLEAN_CONTROL["STOP_TASK"])
+            command = encode_control_command(CONTROL_STOP_TASK)
             await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         else:
             await self.send_command({self._dps_map["PLAY_PAUSE"]: False})
@@ -236,7 +245,7 @@ class BaseDevice:
     async def return_to_base(self) -> None:
         """Return to charging base."""
         if self._novel_api:
-            command = self._encode_control_command(EUFY_CLEAN_CONTROL["START_GOHOME"])
+            command = encode_control_command(CONTROL_START_GOHOME)
             await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         else:
             await self.send_command({self._dps_map["GO_HOME"]: True})
@@ -257,13 +266,6 @@ class BaseDevice:
     async def locate(self) -> None:
         """Locate the vacuum."""
         await self.send_command({self._dps_map["FIND_ROBOT"]: True})
-
-    def _encode_control_command(self, method: int) -> str:
-        """Encode control command for novel API."""
-        # Simplified encoding - just base64 encode the method
-        # In production, this should use protobuf
-        data = {"method": method}
-        return base64.b64encode(json.dumps(data).encode()).decode()
 
 
 class CloudDevice(BaseDevice):

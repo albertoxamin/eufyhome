@@ -275,3 +275,90 @@ def is_base64_encoded(value: str) -> bool:
         pass
     
     return False
+
+
+def encode_varint(value: int) -> bytes:
+    """Encode an integer as a varint."""
+    result = []
+    while value > 127:
+        result.append((value & 0x7F) | 0x80)
+        value >>= 7
+    result.append(value)
+    return bytes(result)
+
+
+def encode_protobuf_field(field_number: int, wire_type: int, value: Any) -> bytes:
+    """
+    Encode a single protobuf field.
+    wire_type: 0 = varint, 2 = length-delimited
+    """
+    tag = (field_number << 3) | wire_type
+    result = encode_varint(tag)
+    
+    if wire_type == 0:  # Varint
+        result += encode_varint(value)
+    elif wire_type == 2:  # Length-delimited
+        if isinstance(value, bytes):
+            result += encode_varint(len(value))
+            result += value
+        elif isinstance(value, str):
+            value_bytes = value.encode('utf-8')
+            result += encode_varint(len(value_bytes))
+            result += value_bytes
+    
+    return result
+
+
+def encode_control_command(method: int, params: dict[str, Any] | None = None) -> str:
+    """
+    Encode a ModeCtrlRequest protobuf message.
+    
+    ModeCtrlRequest structure:
+    - field 1: method (enum/varint)
+    - field 2: seq (uint32) - optional
+    - field 3: auto_clean (message) - for START_AUTO_CLEAN
+    
+    Methods:
+    - 0: START_AUTO_CLEAN
+    - 1: START_SELECT_ROOMS_CLEAN
+    - 3: START_SPOT_CLEAN
+    - 6: START_GOHOME
+    - 12: STOP_TASK
+    - 13: PAUSE_TASK
+    - 14: RESUME_TASK
+    """
+    # Build the message
+    message = b''
+    
+    # Field 1: method (varint)
+    message += encode_protobuf_field(1, 0, method)
+    
+    # For START_AUTO_CLEAN, add auto_clean message with clean_times = 1
+    if method == 0 and params:
+        # AutoClean message: field 1 = clean_times
+        auto_clean_msg = encode_protobuf_field(1, 0, params.get("clean_times", 1))
+        message += encode_protobuf_field(3, 2, auto_clean_msg)
+    
+    # Add length prefix (delimited format)
+    result = encode_varint(len(message)) + message
+    
+    return base64.b64encode(result).decode()
+
+
+def encode_clean_speed_command(speed_index: int) -> str:
+    """
+    Encode a clean speed command.
+    For novel API, this is just the speed index as a varint.
+    """
+    # Simple encoding - just the value
+    return str(speed_index)
+
+
+# Control method constants
+CONTROL_START_AUTO_CLEAN = 0
+CONTROL_START_SELECT_ROOMS_CLEAN = 1
+CONTROL_START_SPOT_CLEAN = 3
+CONTROL_START_GOHOME = 6
+CONTROL_STOP_TASK = 12
+CONTROL_PAUSE_TASK = 13
+CONTROL_RESUME_TASK = 14
