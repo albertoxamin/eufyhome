@@ -46,10 +46,11 @@ def decompress_lz4(data: bytes, original_size: int) -> bytes:
         import lz4.block
         return lz4.block.decompress(data, uncompressed_size=original_size)
     except ImportError:
-        _LOGGER.warning("lz4 library not available, cannot decompress map data")
+        _LOGGER.debug("lz4 library not available, map decompression disabled")
+        # Return empty bytes - map will show placeholder
         return b''
     except Exception as err:
-        _LOGGER.error("Error decompressing LZ4 data: %s", err)
+        _LOGGER.debug("Error decompressing LZ4 data: %s", err)
         return b''
 
 
