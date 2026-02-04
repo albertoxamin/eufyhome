@@ -25,6 +25,7 @@ from .proto_utils import (
     decode_work_status,
     encode_control_command,
     encode_clean_param,
+    encode_room_clean_command,
     is_base64_encoded,
     CONTROL_START_AUTO_CLEAN,
     CONTROL_START_GOHOME,
@@ -334,6 +335,27 @@ class BaseDevice:
             await self.send_command({self._dps_map["CLEANING_PARAMETERS"]: command})
         else:
             _LOGGER.error("Invalid clean extent: %s", extent)
+
+    async def clean_rooms(self, room_ids: list[int], clean_times: int = 1) -> None:
+        """Start cleaning specific rooms by their IDs."""
+        if not self._novel_api:
+            _LOGGER.warning("Room cleaning not supported on legacy devices")
+            return
+        
+        if not room_ids:
+            _LOGGER.error("No room IDs provided")
+            return
+        
+        command = encode_room_clean_command(room_ids, clean_times)
+        await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
+        _LOGGER.info("Started cleaning rooms: %s", room_ids)
+
+    def get_rooms(self) -> list[dict[str, Any]]:
+        """Get list of available rooms from device data."""
+        # Rooms are typically stored in ROOM_PARAMS or similar
+        # This would need to be populated from the device's map data
+        rooms = self._robovac_data.get("ROOMS", [])
+        return rooms
 
 
 class CloudDevice(BaseDevice):

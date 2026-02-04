@@ -92,6 +92,26 @@ The main vacuum entity provides the following features:
 - `vacuum.set_fan_speed`: Set fan speed (quiet, standard, turbo, max)
 - `vacuum.locate`: Make the vacuum beep to help locate it
 
+#### Room Cleaning Service
+
+- `eufy_clean.clean_rooms`: Clean specific rooms by their IDs
+
+**Example service call:**
+```yaml
+service: eufy_clean.clean_rooms
+target:
+  entity_id: vacuum.omni
+data:
+  room_ids: "[1, 2]"  # or "1, 2" for comma-separated
+  clean_times: 1
+```
+
+**Finding Room IDs:**
+Room IDs are assigned by your vacuum when it maps your home. To find them:
+1. Use the Eufy Clean app to see room names and their order
+2. Typically rooms are numbered starting from 1 in the order they were created
+3. Check the vacuum entity's attributes for a `rooms` list if available
+
 ### Sensor Entities
 
 - **Work Status**: Current work status (cleaning, charging, standby, etc.)

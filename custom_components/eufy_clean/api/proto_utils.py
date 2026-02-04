@@ -357,11 +357,48 @@ def encode_clean_speed_command(speed_index: int) -> str:
 # Control method constants
 CONTROL_START_AUTO_CLEAN = 0
 CONTROL_START_SELECT_ROOMS_CLEAN = 1
+CONTROL_START_SELECT_ZONES_CLEAN = 2
 CONTROL_START_SPOT_CLEAN = 3
 CONTROL_START_GOHOME = 6
 CONTROL_STOP_TASK = 12
 CONTROL_PAUSE_TASK = 13
 CONTROL_RESUME_TASK = 14
+
+
+def encode_room_clean_command(room_ids: list[int], clean_times: int = 1) -> str:
+    """
+    Encode a SelectRoomsClean command for cleaning specific rooms.
+    
+    ModeCtrlRequest with method = START_SELECT_ROOMS_CLEAN (1)
+    SelectRoomsClean structure:
+    - field 1: rooms (repeated Room message)
+      - Room: field 1 = id, field 2 = order
+    - field 2: clean_times
+    """
+    # Build SelectRoomsClean message
+    select_rooms = b''
+    
+    # Field 1: rooms (repeated)
+    for order, room_id in enumerate(room_ids):
+        # Build Room message: field 1 = id, field 2 = order
+        room_msg = encode_protobuf_field(1, 0, room_id)
+        room_msg += encode_protobuf_field(2, 0, order + 1)
+        select_rooms += encode_protobuf_field(1, 2, room_msg)
+    
+    # Field 2: clean_times
+    select_rooms += encode_protobuf_field(2, 0, clean_times)
+    
+    # Build ModeCtrlRequest
+    message = b''
+    # Field 1: method = START_SELECT_ROOMS_CLEAN (1)
+    message += encode_protobuf_field(1, 0, CONTROL_START_SELECT_ROOMS_CLEAN)
+    # Field 4: select_rooms_clean
+    message += encode_protobuf_field(4, 2, select_rooms)
+    
+    # Add length prefix (delimited format)
+    result = encode_varint(len(message)) + message
+    
+    return base64.b64encode(result).decode()
 
 # Clean type constants
 CLEAN_TYPE_SWEEP_ONLY = 0

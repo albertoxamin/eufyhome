@@ -112,22 +112,37 @@ class EufyCleanVacuum(CoordinatorEntity[EufyCleanDataUpdateCoordinator], StateVa
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
+        attrs = {}
+        
         if self.coordinator.data and self._device.device_id in self.coordinator.data:
             data = self.coordinator.data[self._device.device_id]
-            return {
+            attrs = {
                 "work_status": data.get("work_status", ""),
                 "work_mode": data.get("work_mode", ""),
                 "error_code": data.get("error_code", "none"),
                 "is_charging": data.get("is_charging", False),
                 "is_docked": data.get("is_docked", False),
             }
-        return {
-            "work_status": self._device.get_work_status(),
-            "work_mode": self._device.get_work_mode(),
-            "error_code": self._device.get_error_code(),
-            "is_charging": self._device.is_charging(),
-            "is_docked": self._device.is_docked(),
-        }
+        else:
+            attrs = {
+                "work_status": self._device.get_work_status(),
+                "work_mode": self._device.get_work_mode(),
+                "error_code": self._device.get_error_code(),
+                "is_charging": self._device.is_charging(),
+                "is_docked": self._device.is_docked(),
+            }
+        
+        # Add rooms if available
+        rooms = self._device.get_rooms()
+        if rooms:
+            attrs["rooms"] = rooms
+        
+        # Add info about room cleaning service
+        if self._device.is_novel_api:
+            attrs["supports_room_cleaning"] = True
+            attrs["room_cleaning_service"] = "eufy_clean.clean_rooms"
+        
+        return attrs
 
     async def async_start(self) -> None:
         """Start cleaning."""

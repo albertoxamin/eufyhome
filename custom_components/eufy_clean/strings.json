@@ -43,5 +43,21 @@
         "name": "Error"
       }
     }
+  },
+  "services": {
+    "clean_rooms": {
+      "name": "Clean Rooms",
+      "description": "Start cleaning specific rooms by their IDs.",
+      "fields": {
+        "room_ids": {
+          "name": "Room IDs",
+          "description": "List of room IDs to clean. Can be a JSON array like [1, 2] or comma-separated like 1, 2."
+        },
+        "clean_times": {
+          "name": "Clean Times",
+          "description": "Number of times to clean each room (1-3)."
+        }
+      }
+    }
   }
 }
