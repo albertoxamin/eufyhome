@@ -1,4 +1,5 @@
 """Support for Eufy Clean vacuum robots."""
+
 from __future__ import annotations
 
 import logging
@@ -50,7 +51,9 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class EufyCleanVacuum(CoordinatorEntity[EufyCleanDataUpdateCoordinator], StateVacuumEntity):
+class EufyCleanVacuum(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], StateVacuumEntity
+):
     """Representation of a Eufy Clean vacuum robot."""
 
     _attr_has_entity_name = True
@@ -76,9 +79,9 @@ class EufyCleanVacuum(CoordinatorEntity[EufyCleanDataUpdateCoordinator], StateVa
         super().__init__(coordinator)
         self._device = device
         self._attr_unique_id = device.device_id
-        
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_name or f"Eufy {model_name}",
@@ -106,14 +109,16 @@ class EufyCleanVacuum(CoordinatorEntity[EufyCleanDataUpdateCoordinator], StateVa
     def fan_speed(self) -> str | None:
         """Return the fan speed of the vacuum."""
         if self.coordinator.data and self._device.device_id in self.coordinator.data:
-            return self.coordinator.data[self._device.device_id].get("clean_speed", "standard")
+            return self.coordinator.data[self._device.device_id].get(
+                "clean_speed", "standard"
+            )
         return self._device.get_clean_speed()
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
         attrs = {}
-        
+
         if self.coordinator.data and self._device.device_id in self.coordinator.data:
             data = self.coordinator.data[self._device.device_id]
             attrs = {
@@ -131,17 +136,17 @@ class EufyCleanVacuum(CoordinatorEntity[EufyCleanDataUpdateCoordinator], StateVa
                 "is_charging": self._device.is_charging(),
                 "is_docked": self._device.is_docked(),
             }
-        
+
         # Add rooms if available
         rooms = self._device.get_rooms()
         if rooms:
             attrs["rooms"] = rooms
-        
+
         # Add info about room cleaning service
         if self._device.is_novel_api:
             attrs["supports_room_cleaning"] = True
             attrs["room_cleaning_service"] = "eufy_clean.clean_rooms"
-        
+
         return attrs
 
     async def async_start(self) -> None:

@@ -1,4 +1,5 @@
 """Support for Eufy Clean select entities."""
+
 from __future__ import annotations
 
 import logging
@@ -51,14 +52,18 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         # Only add these for devices with novel API (mopping support)
         if device.is_novel_api:
-            entities.append(EufyCleanTypeSelect(coordinator, device))
-            entities.append(EufyMopLevelSelect(coordinator, device))
+            # Clean type and mop level when API reports support (from DPS) or model fallback
+            if device.supports_clean_type:
+                entities.append(EufyCleanTypeSelect(coordinator, device))
+                entities.append(EufyMopLevelSelect(coordinator, device))
             entities.append(EufyCleanExtentSelect(coordinator, device))
 
     async_add_entities(entities)
 
 
-class EufyCleanTypeSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], SelectEntity):
+class EufyCleanTypeSelect(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], SelectEntity
+):
     """Select entity for cleaning type (sweep, mop, or both)."""
 
     _attr_has_entity_name = True
@@ -76,9 +81,9 @@ class EufyCleanTypeSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], Sel
         self._device = device
         self._attr_unique_id = f"{device.device_id}_clean_type"
         self._current_option = "Sweep and Mop"
-        
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_name or f"Eufy {model_name}",
@@ -100,7 +105,7 @@ class EufyCleanTypeSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], Sel
             if value == option:
                 option_key = key
                 break
-        
+
         if option_key:
             await self._device.set_clean_type(option_key)
             self._current_option = option
@@ -112,7 +117,9 @@ class EufyCleanTypeSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], Sel
         self.async_write_ha_state()
 
 
-class EufyMopLevelSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], SelectEntity):
+class EufyMopLevelSelect(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], SelectEntity
+):
     """Select entity for mop water level."""
 
     _attr_has_entity_name = True
@@ -130,9 +137,9 @@ class EufyMopLevelSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], Sele
         self._device = device
         self._attr_unique_id = f"{device.device_id}_mop_level"
         self._current_option = "Medium"
-        
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_name or f"Eufy {model_name}",
@@ -153,7 +160,7 @@ class EufyMopLevelSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], Sele
             if value == option:
                 option_key = key
                 break
-        
+
         if option_key:
             await self._device.set_mop_level(option_key)
             self._current_option = option
@@ -165,7 +172,9 @@ class EufyMopLevelSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], Sele
         self.async_write_ha_state()
 
 
-class EufyCleanExtentSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], SelectEntity):
+class EufyCleanExtentSelect(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], SelectEntity
+):
     """Select entity for cleaning extent/intensity."""
 
     _attr_has_entity_name = True
@@ -183,9 +192,9 @@ class EufyCleanExtentSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], S
         self._device = device
         self._attr_unique_id = f"{device.device_id}_clean_extent"
         self._current_option = "Standard"
-        
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_name or f"Eufy {model_name}",
@@ -206,7 +215,7 @@ class EufyCleanExtentSelect(CoordinatorEntity[EufyCleanDataUpdateCoordinator], S
             if value == option:
                 option_key = key
                 break
-        
+
         if option_key:
             await self._device.set_clean_extent(option_key)
             self._current_option = option

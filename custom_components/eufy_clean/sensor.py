@@ -1,4 +1,5 @@
 """Support for Eufy Clean sensors."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -97,9 +98,9 @@ class EufyCleanSensor(CoordinatorEntity[EufyCleanDataUpdateCoordinator], SensorE
         self._device = device
         self.entity_description = description
         self._attr_unique_id = f"{device.device_id}_{description.key}"
-        
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_name or f"Eufy {model_name}",

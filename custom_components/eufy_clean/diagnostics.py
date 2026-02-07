@@ -1,4 +1,5 @@
 """Diagnostics support for Eufy Clean."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -11,7 +12,13 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import EufyCleanDataUpdateCoordinator
 
-TO_REDACT = {CONF_PASSWORD, CONF_USERNAME, "access_token", "user_center_token", "gtoken"}
+TO_REDACT = {
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    "access_token",
+    "user_center_token",
+    "gtoken",
+}
 
 
 async def async_get_config_entry_diagnostics(

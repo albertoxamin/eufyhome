@@ -1,4 +1,5 @@
 """Eufy Clean API implementation."""
+
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +10,8 @@ from typing import Any
 
 import aiohttp
 
-from ..const import EUFY_CLEAN_DEVICES, NOVEL_DPS_MAP
+from ..const import EUFY_CLEAN_DEVICES, EUFY_CLEAN_SUPPORTS_CLEAN_TYPE, NOVEL_DPS_MAP
+from .proto_utils import decode_clean_param
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ class EufyCleanApi:
     async def login(self) -> dict[str, Any]:
         """Login to Eufy API and get credentials."""
         session = await self._get_session()
-        
+
         # Login to Eufy
         headers = {
             "category": "Home",
@@ -59,14 +61,14 @@ class EufyCleanApi:
             "country": "US",
             "Connection": "keep-alive",
         }
-        
+
         data = {
             "email": self._username,
             "password": self._password,
             "client_id": "eufyhome-app",
             "client_secret": "GQCpr9dSp3uQpsOMgJ4xQ",
         }
-        
+
         try:
             async with session.post(
                 "https://home-api.eufylife.com/v1/user/email/login",
@@ -86,10 +88,10 @@ class EufyCleanApi:
 
         # Get user info
         await self._get_user_info()
-        
+
         # Get MQTT credentials
         await self._get_mqtt_credentials()
-        
+
         return {
             "access_token": self._access_token,
             "user_info": self._user_info,
@@ -99,7 +101,7 @@ class EufyCleanApi:
     async def _get_user_info(self) -> None:
         """Get user center info."""
         session = await self._get_session()
-        
+
         headers = {
             "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
             "user-agent": "EufyHome-Android-3.1.3-753",
@@ -111,7 +113,7 @@ class EufyCleanApi:
             "language": "en",
             "country": "US",
         }
-        
+
         try:
             async with session.get(
                 "https://api.eufylife.com/v1/user/user_center_info",
@@ -131,7 +133,7 @@ class EufyCleanApi:
     async def _get_mqtt_credentials(self) -> None:
         """Get MQTT credentials."""
         session = await self._get_session()
-        
+
         headers = {
             "content-type": "application/json",
             "user-agent": "EufyHome-Android-3.1.3-753",
@@ -145,7 +147,7 @@ class EufyCleanApi:
             "x-auth-token": self._user_info.get("user_center_token", ""),
             "gtoken": self._user_info.get("gtoken", ""),
         }
-        
+
         try:
             async with session.post(
                 "https://aiot-clean-api-pr.eufylife.com/app/devicemanage/get_user_mqtt_info",
@@ -161,7 +163,7 @@ class EufyCleanApi:
     async def get_cloud_devices(self) -> list[dict[str, Any]]:
         """Get devices from Eufy Cloud API."""
         session = await self._get_session()
-        
+
         headers = {
             "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
             "user-agent": "EufyHome-Android-3.1.3-753",
@@ -173,7 +175,7 @@ class EufyCleanApi:
             "language": "en",
             "country": "US",
         }
-        
+
         try:
             async with session.get(
                 "https://api.eufylife.com/v1/device/v2",
@@ -192,7 +194,7 @@ class EufyCleanApi:
     async def get_mqtt_devices(self) -> list[dict[str, Any]]:
         """Get devices that use MQTT (newer models like X10)."""
         session = await self._get_session()
-        
+
         headers = {
             "user-agent": "EufyHome-Android-3.1.3-753",
             "timezone": "Europe/Berlin",
@@ -206,7 +208,7 @@ class EufyCleanApi:
             "gtoken": self._user_info.get("gtoken", ""),
             "content-type": "application/json; charset=UTF-8",
         }
-        
+
         try:
             async with session.post(
                 "https://aiot-clean-api-pr.eufylife.com/app/devicerelation/get_device_list",
@@ -215,12 +217,12 @@ class EufyCleanApi:
             ) as resp:
                 result = await resp.json()
                 data = result.get("data", result)
-                
+
                 devices = []
                 if data.get("devices"):
                     for device_obj in data["devices"]:
                         devices.append(device_obj.get("device", device_obj))
-                
+
                 _LOGGER.info("Found %d devices via MQTT API", len(devices))
                 return devices
         except aiohttp.ClientError as err:
@@ -230,37 +232,57 @@ class EufyCleanApi:
     async def get_all_devices(self) -> list[dict[str, Any]]:
         """Get all devices (cloud + MQTT)."""
         await self.get_cloud_devices()
-        
+
         # Get MQTT devices
         mqtt_devices = await self.get_mqtt_devices()
-        
+
         all_devices = []
-        
+
         # Process MQTT devices
         for device in mqtt_devices:
             device_id = device.get("device_sn", device.get("id", ""))
             if not device_id:
                 continue
-                
+
             dps = device.get("dps", {})
             api_type = self._check_api_type(dps)
-            
+
             device_info = self._find_device_model(device_id)
             if device_info.get("invalid"):
                 continue
-                
-            all_devices.append({
-                "device_id": device_id,
-                "device_model": device_info.get("device_model", ""),
-                "device_name": device_info.get("device_name", f"Eufy {device_id}"),
-                "device_model_name": device_info.get("device_model_name", ""),
-                "api_type": api_type,
-                "mqtt": True,
-                "dps": dps,
-            })
-        
+
+            supports_clean_type = self._device_supports_clean_type(
+                api_type, device_info.get("device_model", ""), dps
+            )
+            all_devices.append(
+                {
+                    "device_id": device_id,
+                    "device_model": device_info.get("device_model", ""),
+                    "device_name": device_info.get("device_name", f"Eufy {device_id}"),
+                    "device_model_name": device_info.get("device_model_name", ""),
+                    "api_type": api_type,
+                    "mqtt": True,
+                    "dps": dps,
+                    "supports_clean_type": supports_clean_type,
+                }
+            )
+
         self._mqtt_devices = all_devices
         return all_devices
+
+    def _device_supports_clean_type(
+        self, api_type: str, device_model: str, dps: dict[str, Any]
+    ) -> bool:
+        """True if device supports clean type (sweep/mop) from DPS or fallback model set."""
+        if api_type != "novel":
+            return False
+        dps_key = NOVEL_DPS_MAP.get("CLEANING_PARAMETERS", "154")
+        raw = dps.get(dps_key) if isinstance(dps.get(dps_key), str) else None
+        if raw:
+            decoded = decode_clean_param(raw)
+            if decoded and ("clean_type" in decoded or "mop_level" in decoded):
+                return True
+        return device_model in EUFY_CLEAN_SUPPORTS_CLEAN_TYPE
 
     def _check_api_type(self, dps: dict[str, Any]) -> str:
         """Check if device uses novel or legacy API."""
@@ -276,16 +298,26 @@ class EufyCleanApi:
                 product_code = product.get("product_code", "")[:5]
                 device_model = device.get("device_model", "")[:5]
                 model_code = product_code or device_model
-                
+
                 return {
                     "device_id": device_id,
                     "device_model": model_code,
-                    "device_name": device.get("alias_name") or device.get("device_name") or device.get("name", ""),
-                    "device_model_name": EUFY_CLEAN_DEVICES.get(model_code, product.get("name", "")),
+                    "device_name": device.get("alias_name")
+                    or device.get("device_name")
+                    or device.get("name", ""),
+                    "device_model_name": EUFY_CLEAN_DEVICES.get(
+                        model_code, product.get("name", "")
+                    ),
                     "invalid": False,
                 }
-        
-        return {"device_id": device_id, "device_model": "", "device_name": "", "device_model_name": "", "invalid": True}
+
+        return {
+            "device_id": device_id,
+            "device_model": "",
+            "device_name": "",
+            "device_model_name": "",
+            "invalid": True,
+        }
 
     @property
     def mqtt_credentials(self) -> dict[str, Any] | None:

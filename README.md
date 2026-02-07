@@ -152,6 +152,23 @@ Room IDs are assigned by your vacuum when it maps your home. To find them:
 - Try power cycling your vacuum
 - Ensure the vacuum is visible in the Eufy Clean app
 
+## Development
+
+Linting and formatting use [Ruff](https://docs.astral.sh/ruff/). Configuration is in `pyproject.toml`.
+
+```bash
+# Install dev dependencies (optional)
+pip install -e ".[dev]"
+
+# Check lint and format
+ruff check custom_components scripts
+ruff format --check custom_components scripts
+
+# Auto-fix and format
+ruff check custom_components scripts --fix
+ruff format custom_components scripts
+```
+
 ## Credits
 
 This integration is based on the work of:

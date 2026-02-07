@@ -1,4 +1,5 @@
 """Device controllers for Eufy Clean."""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +16,7 @@ from ..const import (
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_GET_STATE,
     EUFY_CLEAN_SPEEDS,
+    EUFY_CLEAN_SUPPORTS_CLEAN_TYPE,
     EUFY_CLEAN_WORK_STATUS,
     LEGACY_DPS_MAP,
     NOVEL_DPS_MAP,
@@ -60,6 +62,13 @@ class BaseDevice:
         self._novel_api = self._api_type == "novel"
         self._dps_map = NOVEL_DPS_MAP if self._novel_api else LEGACY_DPS_MAP
         self._update_callbacks: list[Callable[[], None]] = []
+        # From API DPS decode when available, else fallback to model set
+        self._supports_clean_type: bool = device_config.get(
+            "supports_clean_type",
+            self._device_model in EUFY_CLEAN_SUPPORTS_CLEAN_TYPE
+            if self._novel_api
+            else False,
+        )
 
     @property
     def device_id(self) -> str:
@@ -81,6 +90,11 @@ class BaseDevice:
         """Return True if using novel API."""
         return self._novel_api
 
+    @property
+    def supports_clean_type(self) -> bool:
+        """Return True if device supports clean type (sweep/mop) selection."""
+        return self._supports_clean_type
+
     def add_update_callback(self, callback: Callable[[], None]) -> None:
         """Add callback for data updates."""
         self._update_callbacks.append(callback)
@@ -95,11 +109,16 @@ class BaseDevice:
 
     def map_data(self, dps: dict[str, Any]) -> None:
         """Map DPS data to robovac data."""
+        mapped_values = set(self._dps_map.values())
         for key, value in dps.items():
             for map_key, map_value in self._dps_map.items():
                 if map_value == key:
                     self._robovac_data[map_key] = value
-        
+                    break
+            else:
+                # Store unmapped DPS keys by raw key so map/camera can use them
+                if key not in mapped_values:
+                    self._robovac_data[key] = value
         _LOGGER.debug("Mapped data: %s", self._robovac_data)
         self._notify_update()
 
@@ -110,10 +129,10 @@ class BaseDevice:
     def get_clean_speed(self) -> str:
         """Get current clean speed."""
         speed = self._robovac_data.get("CLEAN_SPEED", "standard")
-        
+
         if self._novel_api and isinstance(speed, str) and is_base64_encoded(speed):
             return decode_clean_speed(speed)
-        
+
         if isinstance(speed, int) or (isinstance(speed, str) and len(speed) == 1):
             try:
                 speed_index = int(speed)
@@ -121,43 +140,43 @@ class BaseDevice:
                     return EUFY_CLEAN_SPEEDS[speed_index]
             except (ValueError, IndexError):
                 pass
-        
+
         if isinstance(speed, str):
             return speed.lower()
-        
+
         return "standard"
 
     def get_work_status(self) -> str:
         """Get current work status."""
         status = self._robovac_data.get("WORK_STATUS", "")
-        
+
         if self._novel_api and isinstance(status, str) and is_base64_encoded(status):
             decoded = decode_work_status(status)
             return decoded.get("state", "charging")
-        
+
         if isinstance(status, str):
             return status.lower()
-        
+
         return "charging"
 
     def get_work_mode(self) -> str:
         """Get current work mode."""
         mode = self._robovac_data.get("WORK_MODE", "")
-        
+
         if self._novel_api and isinstance(mode, str) and is_base64_encoded(mode):
             decoded = decode_work_status(mode)
             return decoded.get("mode", "auto")
-        
+
         if isinstance(mode, str):
             return mode.lower()
-        
+
         return "auto"
 
     def get_state(self) -> str:
         """Get vacuum state for Home Assistant."""
         work_status = self.get_work_status()
         work_mode = self.get_work_mode()
-        
+
         # Map novel API states to HA states
         state_map = {
             "standby": "docked",
@@ -170,23 +189,23 @@ class BaseDevice:
             "go_home": "returning",
             "cruising": "cleaning",
         }
-        
+
         state = state_map.get(work_status)
         if not state:
             state = EUFY_CLEAN_GET_STATE.get(work_status)
         if not state:
             state = EUFY_CLEAN_GET_STATE.get(work_mode, "idle")
-        
+
         return state
 
     def get_error_code(self) -> str | int:
         """Get current error code."""
         error = self._robovac_data.get("ERROR_CODE", 0)
-        
+
         if self._novel_api and isinstance(error, str) and is_base64_encoded(error):
             decoded = decode_error_code(error)
             error_text = decoded.get("error_text", "none")
-            
+
             # Try to get human-readable error
             if decoded.get("errors"):
                 error_code = decoded["errors"][0]
@@ -194,12 +213,12 @@ class BaseDevice:
             elif decoded.get("warnings"):
                 warn_code = decoded["warnings"][0]
                 return EUFY_CLEAN_ERROR_CODES.get(warn_code, error_text)
-            
+
             return error_text
-        
+
         if isinstance(error, int):
             return EUFY_CLEAN_ERROR_CODES.get(error, f"unknown_error_{error}")
-        
+
         return error if error else "none"
 
     def is_charging(self) -> bool:
@@ -229,8 +248,7 @@ class BaseDevice:
         if self._novel_api:
             # Encode control command for novel API using protobuf
             command = encode_control_command(
-                CONTROL_START_AUTO_CLEAN, 
-                {"clean_times": 1}
+                CONTROL_START_AUTO_CLEAN, {"clean_times": 1}
             )
             await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         else:
@@ -264,7 +282,7 @@ class BaseDevice:
     async def set_fan_speed(self, speed: str) -> None:
         """Set fan speed."""
         speed = speed.lower()
-        
+
         if self._novel_api:
             try:
                 speed_index = EUFY_CLEAN_SPEEDS.index(speed)
@@ -283,13 +301,13 @@ class BaseDevice:
         if not self._novel_api:
             _LOGGER.warning("Clean type not supported on legacy devices")
             return
-        
+
         type_map = {
             "sweep_only": CLEAN_TYPE_SWEEP_ONLY,
             "mop_only": CLEAN_TYPE_MOP_ONLY,
             "sweep_and_mop": CLEAN_TYPE_SWEEP_AND_MOP,
         }
-        
+
         clean_type_value = type_map.get(clean_type.lower())
         if clean_type_value is not None:
             command = encode_clean_param(clean_type=clean_type_value)
@@ -302,13 +320,13 @@ class BaseDevice:
         if not self._novel_api:
             _LOGGER.warning("Mop level not supported on legacy devices")
             return
-        
+
         level_map = {
             "low": MOP_LEVEL_LOW,
             "medium": MOP_LEVEL_MEDIUM,
             "high": MOP_LEVEL_HIGH,
         }
-        
+
         mop_level_value = level_map.get(level.lower())
         if mop_level_value is not None:
             command = encode_clean_param(mop_level=mop_level_value)
@@ -321,14 +339,14 @@ class BaseDevice:
         if not self._novel_api:
             _LOGGER.warning("Clean extent not supported on legacy devices")
             return
-        
+
         extent_map = {
             "normal": CLEAN_EXTENT_NORMAL,
             "narrow": CLEAN_EXTENT_NARROW,
             "deep": CLEAN_EXTENT_NARROW,
             "quick": CLEAN_EXTENT_QUICK,
         }
-        
+
         extent_value = extent_map.get(extent.lower())
         if extent_value is not None:
             command = encode_clean_param(clean_extent=extent_value)
@@ -341,11 +359,11 @@ class BaseDevice:
         if not self._novel_api:
             _LOGGER.warning("Room cleaning not supported on legacy devices")
             return
-        
+
         if not room_ids:
             _LOGGER.error("No room IDs provided")
             return
-        
+
         command = encode_room_clean_command(room_ids, clean_times)
         await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         _LOGGER.info("Started cleaning rooms: %s", room_ids)
@@ -391,7 +409,7 @@ class CloudDevice(BaseDevice):
             "language": "en",
             "country": "US",
         }
-        
+
         try:
             async with self._session.get(
                 "https://api.eufylife.com/v1/device/v2",
@@ -400,7 +418,7 @@ class CloudDevice(BaseDevice):
                 result = await resp.json()
                 data = result.get("data", result)
                 devices = data.get("devices", [])
-                
+
                 for device in devices:
                     if device.get("id") == self._device_id:
                         dps = device.get("dps", {})
@@ -412,7 +430,7 @@ class CloudDevice(BaseDevice):
     async def send_command(self, data: dict[str, Any]) -> None:
         """Send command to cloud device."""
         _LOGGER.debug("Sending cloud command to %s: %s", self._device_id, data)
-        
+
         # Note: This would need the Tuya Cloud API implementation
         # For now, we'll just log the command
         _LOGGER.info("Command to device %s: %s", self._device_id, data)
@@ -443,47 +461,51 @@ class MqttDevice(BaseDevice):
         try:
             # Import paho-mqtt
             import paho.mqtt.client as mqtt_client
-            
+
             if not self._mqtt_credentials:
                 _LOGGER.error("No MQTT credentials available")
                 return
 
             client_id = f"android-{self._mqtt_credentials.get('app_name', 'eufy_home')}-eufy_android_{self._openudid}_{self._mqtt_credentials.get('user_id', '')}"
-            
+
             self._mqtt_client = mqtt_client.Client(client_id=client_id)
-            
+
             # Set up TLS with certificate
             cert_pem = self._mqtt_credentials.get("certificate_pem", "")
             private_key = self._mqtt_credentials.get("private_key", "")
-            
+
             if cert_pem and private_key:
                 # Write certs to temp files (in production, use proper cert handling)
                 import tempfile
-                
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False) as cert_file:
+
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".pem", delete=False
+                ) as cert_file:
                     cert_file.write(cert_pem)
                     cert_path = cert_file.name
-                
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.key', delete=False) as key_file:
+
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".key", delete=False
+                ) as key_file:
                     key_file.write(private_key)
                     key_path = key_file.name
-                
+
                 self._mqtt_client.tls_set(
                     certfile=cert_path,
                     keyfile=key_path,
                 )
-            
+
             # Set callbacks
             self._mqtt_client.on_connect = self._on_connect
             self._mqtt_client.on_message = self._on_message
             self._mqtt_client.on_disconnect = self._on_disconnect
-            
+
             # Connect
             endpoint = self._mqtt_credentials.get("endpoint_addr", "")
             if endpoint:
                 self._mqtt_client.connect_async(endpoint, 8883)
                 self._mqtt_client.loop_start()
-                
+
         except Exception as err:
             _LOGGER.error("Failed to connect MQTT: %s", err)
 
@@ -492,11 +514,11 @@ class MqttDevice(BaseDevice):
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker")
             self._connected = True
-            
+
             # Subscribe to device topics
             topic_res = f"cmd/eufy_home/{self._device_model}/{self._device_id}/res"
             topic_smart = f"smart/mb/in/{self._device_id}"
-            
+
             client.subscribe(topic_res)
             client.subscribe(topic_smart)
             _LOGGER.debug("Subscribed to %s and %s", topic_res, topic_smart)
@@ -508,10 +530,10 @@ class MqttDevice(BaseDevice):
         try:
             payload = json.loads(msg.payload.decode())
             data = payload.get("payload", {})
-            
+
             if isinstance(data, str):
                 data = json.loads(data)
-            
+
             dps = data.get("data", {})
             if dps:
                 self.map_data(dps)
@@ -539,7 +561,7 @@ class MqttDevice(BaseDevice):
             "gtoken": self._user_info.get("gtoken", ""),
             "content-type": "application/json; charset=UTF-8",
         }
-        
+
         try:
             async with self._session.post(
                 "https://aiot-clean-api-pr.eufylife.com/app/devicerelation/get_device_list",
@@ -548,12 +570,12 @@ class MqttDevice(BaseDevice):
             ) as resp:
                 result = await resp.json()
                 data = result.get("data", result)
-                
+
                 if data.get("devices"):
                     for device_obj in data["devices"]:
                         device = device_obj.get("device", device_obj)
                         device_sn = device.get("device_sn", device.get("id", ""))
-                        
+
                         if device_sn == self._device_id:
                             dps = device.get("dps", {})
                             self.map_data(dps)
@@ -566,22 +588,24 @@ class MqttDevice(BaseDevice):
         if not self._mqtt_client or not self._connected:
             _LOGGER.error("MQTT not connected, cannot send command")
             return
-        
+
         try:
             import time
-            
+
             user_id = self._mqtt_credentials.get("user_id", "")
             app_name = self._mqtt_credentials.get("app_name", "eufy_home")
             client_id = f"android-{app_name}-eufy_android_{self._openudid}_{user_id}"
-            
-            payload = json.dumps({
-                "account_id": user_id,
-                "data": data,
-                "device_sn": self._device_id,
-                "protocol": 2,
-                "t": int(time.time() * 1000),
-            })
-            
+
+            payload = json.dumps(
+                {
+                    "account_id": user_id,
+                    "data": data,
+                    "device_sn": self._device_id,
+                    "protocol": 2,
+                    "t": int(time.time() * 1000),
+                }
+            )
+
             mqtt_message = {
                 "head": {
                     "client_id": client_id,
@@ -596,13 +620,13 @@ class MqttDevice(BaseDevice):
                 },
                 "payload": payload,
             }
-            
+
             topic_req = f"cmd/eufy_home/{self._device_model}/{self._device_id}/req"
             topic_smart = f"smart/mb/out/{self._device_id}"
-            
+
             self._mqtt_client.publish(topic_req, json.dumps(mqtt_message))
             self._mqtt_client.publish(topic_smart, json.dumps(mqtt_message))
-            
+
             _LOGGER.debug("Sent MQTT command to %s: %s", self._device_id, data)
         except Exception as err:
             _LOGGER.error("Failed to send MQTT command: %s", err)

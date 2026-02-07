@@ -1,4 +1,5 @@
 """Constants for the Eufy Clean integration."""
+
 from __future__ import annotations
 
 from typing import Final
@@ -72,6 +73,20 @@ EUFY_CLEAN_DEVICES: Final = {
     "T2352": "Robovac E28",
     "T2353": "Robovac E25",
 }
+
+# Device models that support clean type (sweep / mop / both) - hybrid or mop-capable only
+# Name-based: Hybrid, 3-in-1, Omni in display name
+# Plus explicit codes for hybrid models whose name doesn't indicate it (e.g. Robovac C20)
+EUFY_CLEAN_SUPPORTS_CLEAN_TYPE: Final = frozenset(
+    [
+        *(
+            model
+            for model, name in EUFY_CLEAN_DEVICES.items()
+            if "Hybrid" in name or "Omni" in name
+        ),
+        "T2280",  # Robovac C20 - hybrid (sweep/mop)
+    ]
+)
 
 # State mappings (for legacy API)
 EUFY_CLEAN_GET_STATE: Final = {
@@ -223,6 +238,7 @@ LEGACY_DPS_MAP: Final = {
     "FIND_ROBOT": "103",
     "BATTERY_LEVEL": "104",
     "ERROR_CODE": "106",
+    "MAP_DATA": "165",
 }
 
 NOVEL_DPS_MAP: Final = {
@@ -238,4 +254,5 @@ NOVEL_DPS_MAP: Final = {
     "FIND_ROBOT": "160",
     "BATTERY_LEVEL": "163",
     "ERROR_CODE": "177",
+    "MAP_DATA": "165",
 }

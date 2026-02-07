@@ -78,3 +78,6 @@ Desktop.ini
 
 # Project specific
 *.log
+test_credentials.env
+map_preview_*.png
+.ruff_cache/

@@ -1,4 +1,5 @@
 """Data update coordinator for Eufy Clean."""
+
 from __future__ import annotations
 
 import asyncio
@@ -49,7 +50,7 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await device.update()
                 except Exception as err:
                     _LOGGER.error("Error updating device %s: %s", device_id, err)
-            
+
             # Return aggregated device data
             return {
                 device_id: {
@@ -72,25 +73,25 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             # Login to API
             await self.api.login()
-            
+
             # Get all devices
             devices = await self.api.get_all_devices()
-            
+
             if not devices:
                 _LOGGER.warning("No devices found")
                 return False
-            
+
             # Create session for devices
             self._session = aiohttp.ClientSession()
-            
+
             # Initialize device controllers
             for device_data in devices:
                 device_id = device_data.get("device_id", "")
                 if not device_id:
                     continue
-                
+
                 is_mqtt = device_data.get("mqtt", False)
-                
+
                 if is_mqtt:
                     device = MqttDevice(
                         device_config=device_data,
@@ -106,20 +107,20 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         access_token=self.api._access_token,
                         openudid=self.api.openudid,
                     )
-                
+
                 # Connect to device
                 await device.connect()
                 self.devices[device_id] = device
-                
+
                 _LOGGER.info(
                     "Initialized device: %s (%s) - %s",
                     device.device_name,
                     device.device_id,
                     "MQTT" if is_mqtt else "Cloud",
                 )
-            
+
             return True
-            
+
         except Exception as err:
             _LOGGER.error("Error setting up coordinator: %s", err)
             return False
@@ -130,11 +131,11 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for device in self.devices.values():
             if isinstance(device, MqttDevice):
                 await device.disconnect()
-        
+
         # Close session
         if self._session and not self._session.closed:
             await self._session.close()
-        
+
         # Close API session
         await self.api.close()
 

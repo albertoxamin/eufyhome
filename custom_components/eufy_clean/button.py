@@ -1,4 +1,5 @@
 """Support for Eufy Clean buttons."""
+
 from __future__ import annotations
 
 import logging
@@ -51,9 +52,9 @@ class EufyCleanLocateButton(
         super().__init__(coordinator)
         self._device = device
         self._attr_unique_id = f"{device.device_id}_locate"
-        
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_name or f"Eufy {model_name}",

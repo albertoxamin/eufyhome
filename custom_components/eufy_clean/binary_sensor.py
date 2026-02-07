@@ -1,4 +1,5 @@
 """Support for Eufy Clean binary sensors."""
+
 from __future__ import annotations
 
 import logging
@@ -55,9 +56,9 @@ class EufyCleanChargingBinarySensor(
         super().__init__(coordinator)
         self._device = device
         self._attr_unique_id = f"{device.device_id}_charging"
-        
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_name or f"Eufy {model_name}",
@@ -70,7 +71,9 @@ class EufyCleanChargingBinarySensor(
     def is_on(self) -> bool | None:
         """Return true if charging."""
         if self.coordinator.data and self._device.device_id in self.coordinator.data:
-            return self.coordinator.data[self._device.device_id].get("is_charging", False)
+            return self.coordinator.data[self._device.device_id].get(
+                "is_charging", False
+            )
         return self._device.is_charging()
 
     @callback
@@ -97,9 +100,9 @@ class EufyCleanDockedBinarySensor(
         super().__init__(coordinator)
         self._device = device
         self._attr_unique_id = f"{device.device_id}_docked"
-        
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_name or f"Eufy {model_name}",
