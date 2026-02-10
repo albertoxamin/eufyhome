@@ -236,8 +236,8 @@ class EufyCleanMapCamera(Camera):
         if not hasattr(self._device, "_robovac_data"):
             return None
         robovac_data = self._device._robovac_data
-        # Named keys (from DPS map) and raw DPS keys used for map by Eufy/Tuya
-        map_keys = ["MAP_DATA", "MAP", "STREAM", "165", "169", "164", "166"]
+        # Map-related DPS keys per API spec: 170=map_edit, 171=multi_maps_ctrl, 172=multi_maps_mng
+        map_keys = ["MAP_DATA", "170", "171", "172"]
         for key in map_keys:
             if key in robovac_data:
                 parsed = self._parse_map_response(robovac_data[key])
@@ -258,64 +258,84 @@ class EufyCleanMapCamera(Camera):
         return None
 
     def _parse_map_protobuf(self, data: bytes) -> dict[str, Any] | None:
-        """Parse RVC-style map protobuf (width, height, pixel data)."""
+        """Parse map protobuf adaptively — collect all varints and blobs, infer dimensions."""
+        import math
+
         try:
             from .api.proto_utils import decode_varint, decode_protobuf_field
         except ImportError:
             _LOGGER.debug("proto_utils not available for map parsing")
             return None
-        result = {
-            "width": 256,
-            "height": 256,
-            "pixels": [],
-            "robot_pos": None,
-            "dock_pos": None,
-        }
-        try:
+
+        varints: list[int] = []
+        blobs: list[bytes] = []
+
+        def _collect(msg: bytes) -> None:
+            """Recursively collect varints and large blobs from protobuf message."""
             pos = 0
-            length = 0
-            pos_after_varint = 0
-            if len(data) >= 2:
-                length, pos_after_varint = decode_varint(data, 0)
-            if pos_after_varint + length <= len(data):
-                message = data[pos_after_varint : pos_after_varint + length]
-            else:
-                message = data
-            # Parse outer message (MapInfo / RVC map): common fields 1=width, 2=height, 3=resolution, 4/5=map buffer
-            pixel_bytes: bytes | None = None
-            while pos < len(message):
-                field_num, wire_type, value, pos = decode_protobuf_field(message, pos)
+            # Strip optional length prefix
+            if len(msg) >= 2:
+                ln, pos_after = decode_varint(msg, 0)
+                if 0 < ln <= len(msg) - pos_after:
+                    msg = msg[pos_after : pos_after + ln]
+            while pos < len(msg):
+                field_num, wire_type, value, pos = decode_protobuf_field(msg, pos)
                 if field_num is None:
                     break
-                if field_num == 1 and wire_type == 0:
-                    result["width"] = value if value > 0 else result["width"]
-                elif field_num == 2 and wire_type == 0:
-                    result["height"] = value if value > 0 else result["height"]
-                elif (
-                    field_num in (3, 4, 5)
-                    and wire_type == 2
-                    and isinstance(value, bytes)
-                ):
-                    if len(value) > 4:
-                        pixel_bytes = value
-            if pixel_bytes:
-                # Try LZ4 decompress (RVC often sends compressed map)
-                expected_size = (result["width"] * result["height"] + 3) // 4
-                if expected_size > 0 and expected_size <= 1024 * 1024:
-                    try:
-                        decompressed = decompress_lz4(pixel_bytes, expected_size)
-                        if decompressed:
-                            pixel_bytes = decompressed
-                    except Exception:
-                        pass
-                if pixel_bytes:
-                    pixels = parse_map_pixels(
-                        pixel_bytes,
-                        result["width"],
-                        result["height"],
-                    )
-                    result["pixels"] = pixels
-            return result
+                if wire_type == 0:
+                    varints.append(value)
+                elif wire_type == 2 and isinstance(value, bytes):
+                    if len(value) > 50:
+                        # Recurse into nested messages to find inner map blob
+                        try:
+                            _collect(value)
+                        except Exception:
+                            blobs.append(value)
+                    else:
+                        blobs.append(value)
+
+        try:
+            _collect(data)
+
+            if not blobs:
+                return None
+
+            # Largest blob is the most likely candidate for pixel data
+            pixel_bytes = max(blobs, key=len)
+            num_pixels = len(pixel_bytes) * 4  # 2 bits per pixel → 4 pixels per byte
+
+            # Try LZ4 decompression for several plausible target sizes
+            for expected in (num_pixels, 512 * 512, 256 * 256, 1024 * 1024):
+                expected_bytes = (expected + 3) // 4
+                if 0 < expected_bytes <= 1024 * 1024 and expected_bytes >= len(pixel_bytes) // 2:
+                    decompressed = decompress_lz4(pixel_bytes, expected_bytes)
+                    if decompressed and len(decompressed) == expected_bytes:
+                        pixel_bytes = decompressed
+                        num_pixels = len(pixel_bytes) * 4
+                        break
+
+            # Infer dimensions from reasonable varints or pixel count
+            candidates = sorted((v for v in varints if 8 <= v <= 2048), reverse=True)
+            if len(candidates) >= 2:
+                width, height = candidates[0], candidates[1]
+                if width * height > num_pixels * 2 or width * height < num_pixels // 2:
+                    width = height = int(math.isqrt(num_pixels)) or 256
+            elif len(candidates) == 1:
+                width = height = candidates[0]
+            else:
+                width = height = int(math.isqrt(num_pixels)) or 256
+
+            if width <= 0 or height <= 0:
+                width = height = 256
+
+            pixels = parse_map_pixels(pixel_bytes, width, height)
+            return {
+                "width": width,
+                "height": height,
+                "pixels": pixels,
+                "robot_pos": None,
+                "dock_pos": None,
+            }
         except Exception as err:
             _LOGGER.debug("Error parsing map protobuf: %s", err)
             return None

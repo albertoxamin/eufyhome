@@ -24,13 +24,16 @@ from ..const import (
 from .proto_utils import (
     decode_clean_speed,
     decode_error_code,
+    decode_scene_list,
     decode_work_status,
     encode_control_command,
     encode_clean_param,
     encode_room_clean_command,
+    encode_scene_clean_command,
     is_base64_encoded,
     CONTROL_START_AUTO_CLEAN,
     CONTROL_START_GOHOME,
+    CONTROL_START_SCENE_CLEAN,
     CONTROL_STOP_TASK,
     CONTROL_PAUSE_TASK,
     CONTROL_RESUME_TASK,
@@ -367,6 +370,33 @@ class BaseDevice:
         command = encode_room_clean_command(room_ids, clean_times)
         await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         _LOGGER.info("Started cleaning rooms: %s", room_ids)
+
+    def get_volume(self) -> int:
+        """Get current volume level (0-100)."""
+        return int(self._robovac_data.get("VOLUME", 0))
+
+    async def set_volume(self, volume: int) -> None:
+        """Set volume level (0-100)."""
+        volume = max(0, min(100, volume))
+        await self.send_command({self._dps_map["VOLUME"]: volume})
+
+    def get_scenes(self) -> list[dict[str, Any]]:
+        """Get list of cleaning scenes configured on the device."""
+        if not self._novel_api:
+            return []
+        raw = self._robovac_data.get("SCENE_LIST", "")
+        if not raw or not isinstance(raw, str):
+            return []
+        return decode_scene_list(raw)
+
+    async def start_scene(self, scene_id: int) -> None:
+        """Start a cleaning scene by its ID."""
+        if not self._novel_api:
+            _LOGGER.warning("Scene clean not supported on legacy devices")
+            return
+        command = encode_scene_clean_command(scene_id)
+        await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
+        _LOGGER.info("Started scene clean: %s", scene_id)
 
     def get_rooms(self) -> list[dict[str, Any]]:
         """Get list of available rooms from device data."""

@@ -249,6 +249,20 @@ async def main() -> None:
     try:
         await api.login()
         devices = await api.get_all_devices()
+
+        # Fetch product data points for each unique device model
+        seen_models: set[str] = set()
+        for d in devices:
+            model = d.get("device_model", "")
+            if model and model not in seen_models:
+                seen_models.add(model)
+                print(f"\n--- Product data points for model '{model}' ---")
+                props = await api.get_device_properties(model)
+                if props:
+                    import json
+                    print(json.dumps(props, indent=2, default=str))
+                else:
+                    print("  (no data returned)")
     finally:
         await api.close()
 
@@ -282,16 +296,37 @@ async def main() -> None:
 
         # Map: get_device_list may not return the real floor map (might be another API/MQTT)
         dps = d.get("dps", {})
-        map_keys_found = [k for k in MAP_DPS_KEYS if k in dps and dps[k]]
+
+        # Volume (DPS 161, novel API only)
+        volume_raw = dps.get("161")
+        if volume_raw is not None:
+            print(f"    Volume (DPS 161):    {volume_raw}")
+        elif is_novel:
+            print(f"    Volume (DPS 161):    not present in current DPS")
+        else:
+            print(f"    Volume (DPS 161):    n/a (legacy API)")
+        # Dump all DPS keys with sizes
+        print(f"    DPS keys present:")
+        for k in sorted(dps.keys(), key=lambda x: int(x) if x.isdigit() else x):
+            val = dps[k]
+            if isinstance(val, str):
+                print(f"      {k:>4s}: str ({len(val)} chars)")
+            elif isinstance(val, bool):
+                print(f"      {k:>4s}: bool = {val}")
+            elif isinstance(val, (int, float)):
+                print(f"      {k:>4s}: num  = {val}")
+            else:
+                print(f"      {k:>4s}: {type(val).__name__} = {val!r:.80s}")
+
+        # Try map-related keys (170=map_edit, 171=multi_maps_ctrl, 172=multi_maps_mng per API spec)
+        map_keys_found = [k for k in ("170", "171", "172") if k in dps and dps[k]]
         if map_keys_found:
             parts = []
             for k in map_keys_found:
                 val = dps[k]
                 size = len(val) if isinstance(val, str) else 0
                 parts.append(f"'{k}' ({size} chars)")
-            print(
-                f"    DPS keys 165/169:   present — {', '.join(parts)} (may not be floor map)"
-            )
+            print(f"    Map DPS (170-172):   present — {', '.join(parts)}")
             for k in map_keys_found:
                 raw = dps[k]
                 if isinstance(raw, str):
@@ -307,7 +342,7 @@ async def main() -> None:
                     "    Map preview:         not generated (decode failed or format unknown)"
                 )
         else:
-            print("    DPS keys 165/169:   not present")
+            print("    Map DPS (170-172):   not present in current DPS")
 
         print()
 

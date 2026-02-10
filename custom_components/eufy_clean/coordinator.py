@@ -62,6 +62,8 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "error_code": device.get_error_code(),
                     "is_charging": device.is_charging(),
                     "is_docked": device.is_docked(),
+                    "volume": device.get_volume(),
+                    "scenes": device.get_scenes(),
                 }
                 for device_id, device in self.devices.items()
             }

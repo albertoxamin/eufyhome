@@ -254,5 +254,7 @@ NOVEL_DPS_MAP: Final = {
     "FIND_ROBOT": "160",
     "BATTERY_LEVEL": "163",
     "ERROR_CODE": "177",
-    "MAP_DATA": "165",
+    "MAP_DATA": "170",
+    "VOLUME": "161",
+    "SCENE_LIST": "180",
 }

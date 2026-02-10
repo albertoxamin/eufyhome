@@ -319,6 +319,40 @@ class EufyCleanApi:
             "invalid": True,
         }
 
+    async def get_device_properties(self, device_model: str) -> dict[str, Any] | None:
+        """Get product data points for a device model."""
+        session = await self._get_session()
+
+        headers = {
+            "user-agent": "EufyHome-Android-3.1.3-753",
+            "openudid": self._openudid,
+            "os-version": "Android",
+            "model-type": "PHONE",
+            "app-name": "eufy_home",
+            "x-auth-token": self._user_info.get("user_center_token", ""),
+            "gtoken": self._user_info.get("gtoken", ""),
+            "content-type": "application/json; charset=UTF-8",
+        }
+
+        try:
+            async with session.post(
+                "https://aiot-clean-api-pr.eufylife.com/app/things/get_product_data_point",
+                headers=headers,
+                json={"code": device_model},
+            ) as resp:
+                result = await resp.json()
+                if resp.status == 200:
+                    _LOGGER.debug("Got device properties for %s", device_model)
+                    return result.get("data", result)
+                _LOGGER.error(
+                    "Failed to get device properties for %s: %s",
+                    device_model, result,
+                )
+                return None
+        except aiohttp.ClientError as err:
+            _LOGGER.error("Failed to get device properties: %s", err)
+            return None
+
     @property
     def mqtt_credentials(self) -> dict[str, Any] | None:
         """Get MQTT credentials."""

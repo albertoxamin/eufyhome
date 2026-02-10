@@ -369,6 +369,7 @@ CONTROL_START_GOHOME = 6
 CONTROL_STOP_TASK = 12
 CONTROL_PAUSE_TASK = 13
 CONTROL_RESUME_TASK = 14
+CONTROL_START_SCENE_CLEAN = 24
 
 
 def encode_room_clean_command(room_ids: list[int], clean_times: int = 1) -> str:
@@ -404,6 +405,100 @@ def encode_room_clean_command(room_ids: list[int], clean_times: int = 1) -> str:
     # Add length prefix (delimited format)
     result = encode_varint(len(message)) + message
 
+    return base64.b64encode(result).decode()
+
+
+def decode_scene_list(base64_value: str) -> list[dict[str, Any]]:
+    """
+    Decode SceneResponse protobuf from DPS SCENE_LIST (180).
+
+    SceneResponse structure:
+    - field 1: varint (version/type)
+    - field 2: varint (config flag)
+    - field 3: string (empty)
+    - field 4: repeated Scene message
+      - field 1: message { field 1: scene_id (varint, creation timestamp) }
+      - field 3: enabled (varint, 1=active)
+      - field 4: name (string, UTF-8)
+      - field 5: varint (flag)
+
+    Returns list of {"scene_id": int, "name": str, "enabled": bool}.
+    """
+    if not base64_value or not isinstance(base64_value, str):
+        return []
+    try:
+        data = base64.b64decode(base64_value)
+        if len(data) < 2:
+            return []
+
+        # Strip length prefix
+        length, pos_after = decode_varint(data, 0)
+        if 0 < length == len(data) - pos_after:
+            data = data[pos_after:]
+
+        scenes: list[dict[str, Any]] = []
+        pos = 0
+        while pos < len(data):
+            field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
+            if field_num is None:
+                break
+            if field_num == 4 and wire_type == 2 and isinstance(value, bytes):
+                scene = _decode_single_scene(value)
+                if scene:
+                    scenes.append(scene)
+
+        return scenes
+    except Exception as err:
+        _LOGGER.debug("Error decoding scene list: %s", err)
+        return []
+
+
+def _decode_single_scene(data: bytes) -> dict[str, Any] | None:
+    """Decode a single Scene message from the repeated field 4 entries."""
+    scene_id = None
+    name = ""
+    enabled = True
+
+    pos = 0
+    while pos < len(data):
+        field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
+        if field_num is None:
+            break
+        if field_num == 1 and wire_type == 2 and isinstance(value, bytes):
+            # Nested message with field 1 = scene_id
+            inner_fn, inner_wt, inner_val, _ = decode_protobuf_field(value, 0)
+            if inner_fn == 1 and inner_wt == 0:
+                scene_id = inner_val
+        elif field_num == 3 and wire_type == 0:
+            enabled = value != 0
+        elif field_num == 4 and wire_type == 2 and isinstance(value, bytes):
+            try:
+                name = value.decode("utf-8")
+            except UnicodeDecodeError:
+                name = ""
+
+    if scene_id is not None and name:
+        return {"scene_id": scene_id, "name": name, "enabled": enabled}
+    return None
+
+
+def encode_scene_clean_command(scene_id: int) -> str:
+    """
+    Encode a ModeCtrlRequest to start a scene clean.
+
+    ModeCtrlRequest structure:
+    - field 1: method = START_SCENE_CLEAN (24)
+    - field 27: SceneClean { field 1: scene_id }
+
+    Field 27 follows the observed offset pattern (method 0 -> field 3, method 1 -> field 4).
+    """
+    scene_clean_msg = encode_protobuf_field(1, 0, scene_id)
+
+    message = b""
+    message += encode_protobuf_field(1, 0, CONTROL_START_SCENE_CLEAN)
+    message += encode_protobuf_field(27, 2, scene_clean_msg)
+
+    result = encode_varint(len(message)) + message
     return base64.b64encode(result).decode()
 
 
