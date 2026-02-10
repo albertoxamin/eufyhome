@@ -64,6 +64,10 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "is_docked": device.is_docked(),
                     "volume": device.get_volume(),
                     "scenes": device.get_scenes(),
+                    "dnd": device.get_dnd(),
+                    "boost_iq": device.get_boost_iq(),
+                    "cleaning_statistics": device.get_cleaning_statistics(),
+                    "consumables": device.get_consumables(),
                 }
                 for device_id, device in self.devices.items()
             }

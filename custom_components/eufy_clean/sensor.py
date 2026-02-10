@@ -62,6 +62,71 @@ SENSOR_DESCRIPTIONS: tuple[EufyCleanSensorEntityDescription, ...] = (
         icon="mdi:alert-circle",
         value_fn=lambda data: data.get("error_code", "none"),
     ),
+    # Consumable life sensors (DPS 168)
+    EufyCleanSensorEntityDescription(
+        key="rolling_brush_life",
+        translation_key="rolling_brush_life",
+        name="Rolling Brush Life",
+        icon="mdi:brush",
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda data: data.get("consumables", {}).get("rolling_brush"),
+    ),
+    EufyCleanSensorEntityDescription(
+        key="side_brush_life",
+        translation_key="side_brush_life",
+        name="Side Brush Life",
+        icon="mdi:brush",
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda data: data.get("consumables", {}).get("side_brush"),
+    ),
+    EufyCleanSensorEntityDescription(
+        key="filter_life",
+        translation_key="filter_life",
+        name="Filter Life",
+        icon="mdi:air-filter",
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda data: data.get("consumables", {}).get("filter"),
+    ),
+    EufyCleanSensorEntityDescription(
+        key="mop_pad_life",
+        translation_key="mop_pad_life",
+        name="Mop Pad Life",
+        icon="mdi:square-rounded",
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda data: data.get("consumables", {}).get("mop_pad"),
+    ),
+    # Cleaning statistics sensors (DPS 167)
+    EufyCleanSensorEntityDescription(
+        key="total_cleans",
+        translation_key="total_cleans",
+        name="Total Cleans",
+        icon="mdi:counter",
+        value_fn=lambda data: data.get("cleaning_statistics", {}).get("total_cleans"),
+    ),
+    EufyCleanSensorEntityDescription(
+        key="total_area_cleaned",
+        translation_key="total_area_cleaned",
+        name="Total Area Cleaned",
+        icon="mdi:texture-box",
+        native_unit_of_measurement="m²",
+        value_fn=lambda data: (
+            round(data.get("cleaning_statistics", {}).get("total_area", 0) / 10000, 1)
+            if data.get("cleaning_statistics", {}).get("total_area")
+            else None
+        ),
+    ),
+    EufyCleanSensorEntityDescription(
+        key="total_cleaning_time",
+        translation_key="total_cleaning_time",
+        name="Total Cleaning Time",
+        icon="mdi:clock-outline",
+        native_unit_of_measurement="h",
+        value_fn=lambda data: (
+            round(data.get("cleaning_statistics", {}).get("total_time_min", 0) / 60, 1)
+            if data.get("cleaning_statistics", {}).get("total_time_min")
+            else None
+        ),
+    ),
 )
 
 

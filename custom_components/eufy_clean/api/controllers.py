@@ -23,11 +23,15 @@ from ..const import (
 )
 from .proto_utils import (
     decode_clean_speed,
+    decode_cleaning_statistics,
+    decode_consumables,
+    decode_dnd,
     decode_error_code,
     decode_scene_list,
     decode_work_status,
     encode_control_command,
     encode_clean_param,
+    encode_dnd,
     encode_room_clean_command,
     encode_scene_clean_command,
     is_base64_encoded,
@@ -397,6 +401,41 @@ class BaseDevice:
         command = encode_scene_clean_command(scene_id)
         await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         _LOGGER.info("Started scene clean: %s", scene_id)
+
+    def get_dnd(self) -> dict[str, Any]:
+        """Get Do Not Disturb status and schedule."""
+        raw = self._robovac_data.get("DND", "")
+        if not raw or not isinstance(raw, str):
+            return {"enabled": False, "start_hour": 22, "end_hour": 8}
+        return decode_dnd(raw)
+
+    async def set_dnd(self, enabled: bool, start_hour: int, end_hour: int) -> None:
+        """Set Do Not Disturb status and schedule."""
+        command = encode_dnd(enabled, start_hour, end_hour)
+        await self.send_command({self._dps_map.get("DND", "157"): command})
+
+    def get_boost_iq(self) -> bool:
+        """Get BoostIQ status."""
+        return bool(self._robovac_data.get("BOOST_IQ", False))
+
+    async def set_boost_iq(self, enabled: bool) -> None:
+        """Set BoostIQ on/off."""
+        await self.send_command({self._dps_map.get("BOOST_IQ", "159"): enabled})
+
+    def get_cleaning_statistics(self) -> dict[str, Any]:
+        """Get cleaning statistics (total cleans, area, time)."""
+        raw = self._robovac_data.get("CLEANING_STATISTICS", "")
+        if not raw or not isinstance(raw, str):
+            return {"total_cleans": 0, "total_area": 0, "total_time_min": 0, "total_sessions": 0}
+        return decode_cleaning_statistics(raw)
+
+    def get_consumables(self) -> dict[str, Any]:
+        """Get consumable/accessory life percentages."""
+        raw = self._robovac_data.get("ACCESSORIES_STATUS", "")
+        if not raw or not isinstance(raw, str):
+            return {"rolling_brush": 0, "side_brush": 0, "filter": 0, "mop_pad": 0,
+                    "other_brush": 0, "sensor": 0, "runtime_hours": 0}
+        return decode_consumables(raw)
 
     def get_rooms(self) -> list[dict[str, Any]]:
         """Get list of available rooms from device data."""

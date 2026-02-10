@@ -257,4 +257,6 @@ NOVEL_DPS_MAP: Final = {
     "MAP_DATA": "170",
     "VOLUME": "161",
     "SCENE_LIST": "180",
+    "DND": "157",
+    "BOOST_IQ": "159",
 }

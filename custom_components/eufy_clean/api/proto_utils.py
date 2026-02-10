@@ -502,6 +502,209 @@ def encode_scene_clean_command(scene_id: int) -> str:
     return base64.b64encode(result).decode()
 
 
+def decode_dnd(base64_value: str) -> dict[str, Any]:
+    """
+    Decode DND (Do Not Disturb) protobuf from DPS 157.
+
+    Structure:
+    - field 2 (message):
+      - field 1 (message): { field 1: enabled (varint, 1=on, 0=off) }
+      - field 2 (message): { field 1: start_hour (varint) }
+      - field 3 (message): { field 1: end_hour (varint) }
+
+    Returns {"enabled": bool, "start_hour": int, "end_hour": int}.
+    """
+    result = {"enabled": False, "start_hour": 22, "end_hour": 8}
+    if not base64_value or not isinstance(base64_value, str):
+        return result
+    try:
+        data = base64.b64decode(base64_value)
+        if len(data) < 2:
+            return result
+
+        # Strip length prefix
+        length, pos_after = decode_varint(data, 0)
+        if 0 < length == len(data) - pos_after:
+            data = data[pos_after:]
+
+        pos = 0
+        while pos < len(data):
+            field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
+            if field_num is None:
+                break
+            if field_num == 2 and wire_type == 2 and isinstance(value, bytes):
+                # Parse the DND schedule message
+                inner_pos = 0
+                while inner_pos < len(value):
+                    f, wt, v, inner_pos = decode_protobuf_field(value, inner_pos)
+                    if f is None:
+                        break
+                    if f == 1 and wt == 2 and isinstance(v, bytes):
+                        vf, _, vv, _ = decode_protobuf_field(v, 0)
+                        if vf == 1:
+                            result["enabled"] = vv != 0
+                    elif f == 2 and wt == 2 and isinstance(v, bytes):
+                        vf, _, vv, _ = decode_protobuf_field(v, 0)
+                        if vf == 1:
+                            result["start_hour"] = vv
+                    elif f == 3 and wt == 2 and isinstance(v, bytes):
+                        vf, _, vv, _ = decode_protobuf_field(v, 0)
+                        if vf == 1:
+                            result["end_hour"] = vv
+
+        return result
+    except Exception as err:
+        _LOGGER.debug("Error decoding DND: %s", err)
+        return result
+
+
+def encode_dnd(enabled: bool, start_hour: int, end_hour: int) -> str:
+    """
+    Encode DND protobuf for DPS 157.
+
+    Mirrors the decoded structure:
+    field 1: empty string
+    field 2 (message):
+      field 1 (message): { field 1: enabled (0 or 1) }
+      field 2 (message): { field 1: start_hour }
+      field 3 (message): { field 1: end_hour }
+    """
+    enabled_msg = encode_protobuf_field(1, 0, 1 if enabled else 0)
+    start_msg = encode_protobuf_field(1, 0, start_hour)
+    end_msg = encode_protobuf_field(1, 0, end_hour)
+
+    schedule = b""
+    schedule += encode_protobuf_field(1, 2, enabled_msg)
+    schedule += encode_protobuf_field(2, 2, start_msg)
+    schedule += encode_protobuf_field(3, 2, end_msg)
+
+    message = b""
+    message += encode_protobuf_field(1, 2, b"")  # empty string field 1
+    message += encode_protobuf_field(2, 2, schedule)
+
+    result = encode_varint(len(message)) + message
+    return base64.b64encode(result).decode()
+
+
+def decode_cleaning_statistics(base64_value: str) -> dict[str, Any]:
+    """
+    Decode cleaning statistics protobuf from DPS 167.
+
+    Structure:
+    - field 1: { field 1: total_cleans, field 2: type_count }
+    - field 2: { field 1: total_area, field 2: total_time_min, field 3: sessions }
+    - field 3: { field 1: area2, field 2: time2, field 3: sessions2 }
+
+    Returns {"total_cleans": int, "total_area": int, "total_time_min": int, "total_sessions": int}.
+    """
+    result = {"total_cleans": 0, "total_area": 0, "total_time_min": 0, "total_sessions": 0}
+    if not base64_value or not isinstance(base64_value, str):
+        return result
+    try:
+        data = base64.b64decode(base64_value)
+        if len(data) < 2:
+            return result
+
+        length, pos_after = decode_varint(data, 0)
+        if 0 < length == len(data) - pos_after:
+            data = data[pos_after:]
+
+        pos = 0
+        while pos < len(data):
+            field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
+            if field_num is None:
+                break
+            if field_num == 1 and wire_type == 2 and isinstance(value, bytes):
+                inner_pos = 0
+                while inner_pos < len(value):
+                    f, wt, v, inner_pos = decode_protobuf_field(value, inner_pos)
+                    if f is None:
+                        break
+                    if f == 1 and wt == 0:
+                        result["total_cleans"] = v
+            elif field_num == 2 and wire_type == 2 and isinstance(value, bytes):
+                inner_pos = 0
+                while inner_pos < len(value):
+                    f, wt, v, inner_pos = decode_protobuf_field(value, inner_pos)
+                    if f is None:
+                        break
+                    if f == 1 and wt == 0:
+                        result["total_area"] = v
+                    elif f == 2 and wt == 0:
+                        result["total_time_min"] = v
+                    elif f == 3 and wt == 0:
+                        result["total_sessions"] = v
+
+        return result
+    except Exception as err:
+        _LOGGER.debug("Error decoding cleaning statistics: %s", err)
+        return result
+
+
+def decode_consumables(base64_value: str) -> dict[str, Any]:
+    """
+    Decode consumables/accessories protobuf from DPS 168.
+
+    Structure (field 1 outer message):
+    - field 1.1: rolling_brush life %
+    - field 2.1: side_brush life %
+    - field 3.1: filter life %
+    - field 4.1: mop_pad life %
+    - field 5.1: other_brush life %
+    - field 6.1: sensor life %
+    - field 7.1: runtime_hours
+
+    Returns dict with percentage values (0-100) and runtime_hours.
+    """
+    field_map = {
+        1: "rolling_brush",
+        2: "side_brush",
+        3: "filter",
+        4: "mop_pad",
+        5: "other_brush",
+        6: "sensor",
+        7: "runtime_hours",
+    }
+    result = {name: 0 for name in field_map.values()}
+    if not base64_value or not isinstance(base64_value, str):
+        return result
+    try:
+        data = base64.b64decode(base64_value)
+        if len(data) < 2:
+            return result
+
+        length, pos_after = decode_varint(data, 0)
+        if 0 < length == len(data) - pos_after:
+            data = data[pos_after:]
+
+        pos = 0
+        while pos < len(data):
+            field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
+            if field_num is None:
+                break
+            # Outer field 1 contains the consumables message
+            if field_num == 1 and wire_type == 2 and isinstance(value, bytes):
+                inner_pos = 0
+                while inner_pos < len(value):
+                    f, wt, v, inner_pos = decode_protobuf_field(value, inner_pos)
+                    if f is None:
+                        break
+                    if f in field_map:
+                        if wt == 2 and isinstance(v, bytes):
+                            # Nested message: { field 1: value }
+                            vf, _, vv, _ = decode_protobuf_field(v, 0)
+                            if vf == 1:
+                                result[field_map[f]] = vv
+                        elif wt == 0:
+                            result[field_map[f]] = v
+                break  # Only first field 1
+
+        return result
+    except Exception as err:
+        _LOGGER.debug("Error decoding consumables: %s", err)
+        return result
+
+
 # Clean type constants
 CLEAN_TYPE_SWEEP_ONLY = 0
 CLEAN_TYPE_MOP_ONLY = 1
