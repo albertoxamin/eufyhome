@@ -488,15 +488,16 @@ def encode_scene_clean_command(scene_id: int) -> str:
 
     ModeCtrlRequest structure:
     - field 1: method = START_SCENE_CLEAN (24)
-    - field 27: SceneClean { field 1: scene_id }
+    - field 14: SceneClean { field 1: scene_id }
 
-    Field 27 follows the observed offset pattern (method 0 -> field 3, method 1 -> field 4).
+    The oneof param fields are numbered sequentially (3-13 for methods 0-10,
+    14 for SceneClean) regardless of the method enum value.
     """
     scene_clean_msg = encode_protobuf_field(1, 0, scene_id)
 
     message = b""
     message += encode_protobuf_field(1, 0, CONTROL_START_SCENE_CLEAN)
-    message += encode_protobuf_field(27, 2, scene_clean_msg)
+    message += encode_protobuf_field(14, 2, scene_clean_msg)
 
     result = encode_varint(len(message)) + message
     return base64.b64encode(result).decode()
