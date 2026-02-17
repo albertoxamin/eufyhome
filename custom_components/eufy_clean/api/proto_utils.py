@@ -598,7 +598,12 @@ def decode_cleaning_statistics(base64_value: str) -> dict[str, Any]:
 
     Returns {"total_cleans": int, "total_area": int, "total_time_min": int, "total_sessions": int}.
     """
-    result = {"total_cleans": 0, "total_area": 0, "total_time_min": 0, "total_sessions": 0}
+    result = {
+        "total_cleans": 0,
+        "total_area": 0,
+        "total_time_min": 0,
+        "total_sessions": 0,
+    }
     if not base64_value or not isinstance(base64_value, str):
         return result
     try:
@@ -647,15 +652,15 @@ def decode_consumables(base64_value: str) -> dict[str, Any]:
     Decode consumables/accessories protobuf from DPS 168.
 
     Structure (field 1 outer message):
-    - field 1.1: rolling_brush life %
-    - field 2.1: side_brush life %
-    - field 3.1: filter life %
-    - field 4.1: mop_pad life %
-    - field 5.1: other_brush life %
-    - field 6.1: sensor life %
-    - field 7.1: runtime_hours
+    - field 1.1: rolling_brush usage hours
+    - field 2.1: side_brush usage hours
+    - field 3.1: filter usage hours
+    - field 4.1: mop_pad usage hours
+    - field 5.1: other_brush usage hours
+    - field 6.1: sensor usage hours
+    - field 7.1: runtime_hours (total device runtime)
 
-    Returns dict with percentage values (0-100) and runtime_hours.
+    Returns dict with usage hours for each consumable.
     """
     field_map = {
         1: "rolling_brush",
@@ -666,7 +671,7 @@ def decode_consumables(base64_value: str) -> dict[str, Any]:
         6: "sensor",
         7: "runtime_hours",
     }
-    result = {name: 0 for name in field_map.values()}
+    result = dict.fromkeys(field_map.values(), 0)
     if not base64_value or not isinstance(base64_value, str):
         return result
     try:

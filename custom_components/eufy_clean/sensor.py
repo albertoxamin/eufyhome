@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-import logging
 from typing import Any
 
 from homeassistant.components.sensor import (
-    SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -62,37 +61,37 @@ SENSOR_DESCRIPTIONS: tuple[EufyCleanSensorEntityDescription, ...] = (
         icon="mdi:alert-circle",
         value_fn=lambda data: data.get("error_code", "none"),
     ),
-    # Consumable life sensors (DPS 168)
+    # Consumable usage sensors (DPS 168) - values are usage hours
     EufyCleanSensorEntityDescription(
-        key="rolling_brush_life",
-        translation_key="rolling_brush_life",
-        name="Rolling Brush Life",
+        key="rolling_brush_usage",
+        translation_key="rolling_brush_usage",
+        name="Rolling Brush Usage",
         icon="mdi:brush",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfTime.HOURS,
         value_fn=lambda data: data.get("consumables", {}).get("rolling_brush"),
     ),
     EufyCleanSensorEntityDescription(
-        key="side_brush_life",
-        translation_key="side_brush_life",
-        name="Side Brush Life",
+        key="side_brush_usage",
+        translation_key="side_brush_usage",
+        name="Side Brush Usage",
         icon="mdi:brush",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfTime.HOURS,
         value_fn=lambda data: data.get("consumables", {}).get("side_brush"),
     ),
     EufyCleanSensorEntityDescription(
-        key="filter_life",
-        translation_key="filter_life",
-        name="Filter Life",
+        key="filter_usage",
+        translation_key="filter_usage",
+        name="Filter Usage",
         icon="mdi:air-filter",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfTime.HOURS,
         value_fn=lambda data: data.get("consumables", {}).get("filter"),
     ),
     EufyCleanSensorEntityDescription(
-        key="mop_pad_life",
-        translation_key="mop_pad_life",
-        name="Mop Pad Life",
+        key="mop_pad_usage",
+        translation_key="mop_pad_usage",
+        name="Mop Pad Usage",
         icon="mdi:square-rounded",
-        native_unit_of_measurement=PERCENTAGE,
+        native_unit_of_measurement=UnitOfTime.HOURS,
         value_fn=lambda data: data.get("consumables", {}).get("mop_pad"),
     ),
     # Cleaning statistics sensors (DPS 167)

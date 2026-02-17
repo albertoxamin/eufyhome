@@ -2,26 +2,35 @@
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 import logging
-import ssl
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import aiohttp
 
 from ..const import (
-    EUFY_CLEAN_CONTROL,
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_GET_STATE,
     EUFY_CLEAN_SPEEDS,
     EUFY_CLEAN_SUPPORTS_CLEAN_TYPE,
-    EUFY_CLEAN_WORK_STATUS,
     LEGACY_DPS_MAP,
     NOVEL_DPS_MAP,
 )
 from .proto_utils import (
+    CLEAN_EXTENT_NARROW,
+    CLEAN_EXTENT_NORMAL,
+    CLEAN_EXTENT_QUICK,
+    CLEAN_TYPE_MOP_ONLY,
+    CLEAN_TYPE_SWEEP_AND_MOP,
+    CLEAN_TYPE_SWEEP_ONLY,
+    CONTROL_PAUSE_TASK,
+    CONTROL_START_AUTO_CLEAN,
+    CONTROL_START_GOHOME,
+    CONTROL_STOP_TASK,
+    MOP_LEVEL_HIGH,
+    MOP_LEVEL_LOW,
+    MOP_LEVEL_MEDIUM,
     decode_clean_speed,
     decode_cleaning_statistics,
     decode_consumables,
@@ -29,27 +38,12 @@ from .proto_utils import (
     decode_error_code,
     decode_scene_list,
     decode_work_status,
-    encode_control_command,
     encode_clean_param,
+    encode_control_command,
     encode_dnd,
     encode_room_clean_command,
     encode_scene_clean_command,
     is_base64_encoded,
-    CONTROL_START_AUTO_CLEAN,
-    CONTROL_START_GOHOME,
-    CONTROL_START_SCENE_CLEAN,
-    CONTROL_STOP_TASK,
-    CONTROL_PAUSE_TASK,
-    CONTROL_RESUME_TASK,
-    CLEAN_TYPE_SWEEP_ONLY,
-    CLEAN_TYPE_MOP_ONLY,
-    CLEAN_TYPE_SWEEP_AND_MOP,
-    MOP_LEVEL_LOW,
-    MOP_LEVEL_MEDIUM,
-    MOP_LEVEL_HIGH,
-    CLEAN_EXTENT_NORMAL,
-    CLEAN_EXTENT_NARROW,
-    CLEAN_EXTENT_QUICK,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -118,14 +112,14 @@ class BaseDevice:
         """Map DPS data to robovac data."""
         mapped_values = set(self._dps_map.values())
         for key, value in dps.items():
+            matched = False
             for map_key, map_value in self._dps_map.items():
                 if map_value == key:
                     self._robovac_data[map_key] = value
-                    break
-            else:
-                # Store unmapped DPS keys by raw key so map/camera can use them
-                if key not in mapped_values:
-                    self._robovac_data[key] = value
+                    matched = True
+            # Store unmapped DPS keys by raw key so map/camera can use them
+            if not matched and key not in mapped_values:
+                self._robovac_data[key] = value
         _LOGGER.debug("Mapped data: %s", self._robovac_data)
         self._notify_update()
 
@@ -426,15 +420,27 @@ class BaseDevice:
         """Get cleaning statistics (total cleans, area, time)."""
         raw = self._robovac_data.get("CLEANING_STATISTICS", "")
         if not raw or not isinstance(raw, str):
-            return {"total_cleans": 0, "total_area": 0, "total_time_min": 0, "total_sessions": 0}
+            return {
+                "total_cleans": 0,
+                "total_area": 0,
+                "total_time_min": 0,
+                "total_sessions": 0,
+            }
         return decode_cleaning_statistics(raw)
 
     def get_consumables(self) -> dict[str, Any]:
-        """Get consumable/accessory life percentages."""
+        """Get consumable/accessory usage hours."""
         raw = self._robovac_data.get("ACCESSORIES_STATUS", "")
         if not raw or not isinstance(raw, str):
-            return {"rolling_brush": 0, "side_brush": 0, "filter": 0, "mop_pad": 0,
-                    "other_brush": 0, "sensor": 0, "runtime_hours": 0}
+            return {
+                "rolling_brush": 0,
+                "side_brush": 0,
+                "filter": 0,
+                "mop_pad": 0,
+                "other_brush": 0,
+                "sensor": 0,
+                "runtime_hours": 0,
+            }
         return decode_consumables(raw)
 
     def get_rooms(self) -> list[dict[str, Any]]:
