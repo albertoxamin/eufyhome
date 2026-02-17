@@ -128,6 +128,34 @@ SENSOR_DESCRIPTIONS: tuple[EufyCleanSensorEntityDescription, ...] = (
     ),
 )
 
+# Station-specific sensors (novel API only)
+STATION_SENSOR_DESCRIPTIONS: tuple[EufyCleanSensorEntityDescription, ...] = (
+    EufyCleanSensorEntityDescription(
+        key="dock_status",
+        translation_key="dock_status",
+        name="Dock Status",
+        icon="mdi:home-circle",
+        value_fn=lambda data: _derive_dock_status(data.get("station_status", {})),
+    ),
+    EufyCleanSensorEntityDescription(
+        key="clean_water_level",
+        translation_key="clean_water_level",
+        name="Clean Water Level",
+        icon="mdi:water-percent",
+        native_unit_of_measurement="%",
+        value_fn=lambda data: data.get("station_status", {}).get("clean_water_pct"),
+    ),
+)
+
+
+def _derive_dock_status(station: dict[str, Any]) -> str | None:
+    """Derive a human-readable dock status from station_status dict."""
+    if not station.get("connected", False):
+        return None
+    if station.get("collecting_dust", False):
+        return "collecting dust"
+    return station.get("state", "idle")
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -141,6 +169,11 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         for description in SENSOR_DESCRIPTIONS:
             entities.append(EufyCleanSensor(coordinator, device, description))
+        if device.is_novel_api:
+            for description in STATION_SENSOR_DESCRIPTIONS:
+                entities.append(
+                    EufyCleanStationSensor(coordinator, device, description)
+                )
 
     async_add_entities(entities)
 
@@ -172,6 +205,61 @@ class EufyCleanSensor(CoordinatorEntity[EufyCleanDataUpdateCoordinator], SensorE
             model=model_name,
             sw_version=device.device_model,
         )
+
+    @property
+    def native_value(self) -> Any:
+        """Return the state of the sensor."""
+        if self.coordinator.data and self._device.device_id in self.coordinator.data:
+            return self.entity_description.value_fn(
+                self.coordinator.data[self._device.device_id]
+            )
+        return None
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
+
+
+class EufyCleanStationSensor(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], SensorEntity
+):
+    """Representation of a Eufy Clean station sensor."""
+
+    _attr_has_entity_name = True
+    entity_description: EufyCleanSensorEntityDescription
+
+    def __init__(
+        self,
+        coordinator: EufyCleanDataUpdateCoordinator,
+        device: BaseDevice,
+        description: EufyCleanSensorEntityDescription,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._device = device
+        self.entity_description = description
+        self._attr_unique_id = f"{device.device_id}_{description.key}"
+
+        model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
+
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.device_id)},
+            name=device.device_name or f"Eufy {model_name}",
+            manufacturer=MANUFACTURER,
+            model=model_name,
+            sw_version=device.device_model,
+        )
+
+    @property
+    def available(self) -> bool:
+        """Return True if station is connected."""
+        if self.coordinator.data and self._device.device_id in self.coordinator.data:
+            station = self.coordinator.data[self._device.device_id].get(
+                "station_status", {}
+            )
+            return station.get("connected", False)
+        return False
 
     @property
     def native_value(self) -> Any:

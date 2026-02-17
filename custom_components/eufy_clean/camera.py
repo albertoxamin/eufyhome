@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import io
 import logging
@@ -262,7 +261,7 @@ class EufyCleanMapCamera(Camera):
         import math
 
         try:
-            from .api.proto_utils import decode_varint, decode_protobuf_field
+            from .api.proto_utils import decode_protobuf_field, decode_varint
         except ImportError:
             _LOGGER.debug("proto_utils not available for map parsing")
             return None

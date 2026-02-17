@@ -37,12 +37,15 @@ from .proto_utils import (
     decode_dnd,
     decode_error_code,
     decode_scene_list,
+    decode_station_status,
     decode_work_status,
     encode_clean_param,
     encode_control_command,
     encode_dnd,
     encode_room_clean_command,
     encode_scene_clean_command,
+    encode_station_auto_cfg,
+    encode_station_manual_cmd,
     is_base64_encoded,
 )
 
@@ -449,6 +452,52 @@ class BaseDevice:
         # This would need to be populated from the device's map data
         rooms = self._robovac_data.get("ROOMS", [])
         return rooms
+
+    def get_station_status(self) -> dict[str, Any]:
+        """Get decoded station status from DPS 173."""
+        defaults = {
+            "connected": False,
+            "state": "idle",
+            "collecting_dust": False,
+            "clean_water_pct": 0,
+            "auto_empty_enabled": False,
+            "auto_wash_enabled": False,
+        }
+        if not self._novel_api:
+            return defaults
+        raw = self._robovac_data.get("STATION_STATUS", "")
+        if not raw or not isinstance(raw, str):
+            return defaults
+        return decode_station_status(raw)
+
+    def has_station(self) -> bool:
+        """Return True if a station is connected."""
+        return self.get_station_status().get("connected", False)
+
+    async def station_dry_mop(self) -> None:
+        """Send manual dry mop command to station."""
+        command = encode_station_manual_cmd("go_dry")
+        await self.send_command({self._dps_map.get("STATION_STATUS", "173"): command})
+
+    async def station_wash_mop(self) -> None:
+        """Send manual wash mop command to station."""
+        command = encode_station_manual_cmd("go_selfcleaning")
+        await self.send_command({self._dps_map.get("STATION_STATUS", "173"): command})
+
+    async def station_empty_dust(self) -> None:
+        """Send manual empty dust bin command to station."""
+        command = encode_station_manual_cmd("go_collect_dust")
+        await self.send_command({self._dps_map.get("STATION_STATUS", "173"): command})
+
+    async def set_station_auto_empty(self, enabled: bool) -> None:
+        """Set station auto-empty dust configuration."""
+        command = encode_station_auto_cfg(auto_empty=enabled)
+        await self.send_command({self._dps_map.get("STATION_STATUS", "173"): command})
+
+    async def set_station_auto_wash(self, enabled: bool) -> None:
+        """Set station auto-wash mop configuration."""
+        command = encode_station_auto_cfg(auto_wash=enabled)
+        await self.send_command({self._dps_map.get("STATION_STATUS", "173"): command})
 
 
 class CloudDevice(BaseDevice):

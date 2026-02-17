@@ -32,6 +32,8 @@ async def async_setup_entry(
         entities.append(EufyCleanDndSwitch(coordinator, device))
         if device.is_novel_api:
             entities.append(EufyCleanBoostIqSwitch(coordinator, device))
+            entities.append(EufyCleanAutoEmptySwitch(coordinator, device))
+            entities.append(EufyCleanAutoWashSwitch(coordinator, device))
 
     async_add_entities(entities)
 
@@ -140,6 +142,118 @@ class EufyCleanBoostIqSwitch(
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off BoostIQ."""
         await self._device.set_boost_iq(False)
+        await self.coordinator.async_request_refresh()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
+
+
+class EufyCleanAutoEmptySwitch(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], SwitchEntity
+):
+    """Switch entity for station auto-empty dust bin."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Auto Empty"
+    _attr_icon = "mdi:delete-empty"
+
+    def __init__(
+        self,
+        coordinator: EufyCleanDataUpdateCoordinator,
+        device: BaseDevice,
+    ) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_auto_empty"
+        self._attr_device_info = _make_device_info(device)
+
+    @property
+    def available(self) -> bool:
+        """Return True if station is connected."""
+        if self.coordinator.data and self._device.device_id in self.coordinator.data:
+            station = self.coordinator.data[self._device.device_id].get(
+                "station_status", {}
+            )
+            return station.get("connected", False)
+        return False
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if auto-empty is enabled."""
+        if self.coordinator.data and self._device.device_id in self.coordinator.data:
+            station = self.coordinator.data[self._device.device_id].get(
+                "station_status", {}
+            )
+            return station.get("auto_empty_enabled", False)
+        return None
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn on auto-empty."""
+        await self._device.set_station_auto_empty(True)
+        await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn off auto-empty."""
+        await self._device.set_station_auto_empty(False)
+        await self.coordinator.async_request_refresh()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
+
+
+class EufyCleanAutoWashSwitch(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], SwitchEntity
+):
+    """Switch entity for station auto-wash mop."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Auto Wash Mop"
+    _attr_icon = "mdi:washing-machine"
+
+    def __init__(
+        self,
+        coordinator: EufyCleanDataUpdateCoordinator,
+        device: BaseDevice,
+    ) -> None:
+        """Initialize the switch."""
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_auto_wash"
+        self._attr_device_info = _make_device_info(device)
+
+    @property
+    def available(self) -> bool:
+        """Return True if station is connected."""
+        if self.coordinator.data and self._device.device_id in self.coordinator.data:
+            station = self.coordinator.data[self._device.device_id].get(
+                "station_status", {}
+            )
+            return station.get("connected", False)
+        return False
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if auto-wash is enabled."""
+        if self.coordinator.data and self._device.device_id in self.coordinator.data:
+            station = self.coordinator.data[self._device.device_id].get(
+                "station_status", {}
+            )
+            return station.get("auto_wash_enabled", False)
+        return None
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn on auto-wash."""
+        await self._device.set_station_auto_wash(True)
+        await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn off auto-wash."""
+        await self._device.set_station_auto_wash(False)
         await self.coordinator.async_request_refresh()
 
     @callback

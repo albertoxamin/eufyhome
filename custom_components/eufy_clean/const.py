@@ -259,4 +259,5 @@ NOVEL_DPS_MAP: Final = {
     "SCENE_LIST": "180",
     "DND": "157",
     "BOOST_IQ": "159",
+    "STATION_STATUS": "173",
 }

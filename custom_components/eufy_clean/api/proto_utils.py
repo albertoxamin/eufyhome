@@ -774,6 +774,12 @@ MOP_LEVEL_LOW = 0
 MOP_LEVEL_MEDIUM = 1
 MOP_LEVEL_HIGH = 2
 
+# Station status state mapping (StationResponse.StationStatus.State)
+STATION_STATE_MAP = {0: "idle", 1: "washing", 2: "drying", 3: "removing_scale"}
+
+# Water level mapping
+WATER_LEVEL_MAP = {0: "empty", 1: "very_low", 2: "low", 3: "medium", 4: "high"}
+
 # Clean extent constants
 CLEAN_EXTENT_NORMAL = 0
 CLEAN_EXTENT_NARROW = 1  # Deep clean
@@ -826,4 +832,190 @@ def encode_clean_param(
     # Add length prefix (delimited format)
     result = encode_varint(len(message)) + message
 
+    return base64.b64encode(result).decode()
+
+
+def decode_station_status(base64_value: str) -> dict[str, Any]:
+    """
+    Decode StationResponse protobuf from DPS 173.
+
+    StationResponse structure:
+    - field 1 (message): auto_cfg_status (AutoActionCfg)
+      - field 1 (message): wash config → field 3 (varint): cfg (0=CLOSE, 1=STANDARD)
+      - field 6 (message): collectdust_v2 → field 1 (message): sw → field 1 (varint): enabled
+    - field 2 (message): station_status
+      - field 1 (varint): connected
+      - field 2 (varint): state enum
+      - field 3 (varint): collecting_dust
+    - field 5 (message): clean_water → field 1 (varint): percentage 0-100
+    """
+    defaults: dict[str, Any] = {
+        "connected": False,
+        "state": "idle",
+        "collecting_dust": False,
+        "clean_water_pct": 0,
+        "auto_empty_enabled": False,
+        "auto_wash_enabled": False,
+    }
+    if not base64_value or not isinstance(base64_value, str):
+        return defaults
+    try:
+        data = base64.b64decode(base64_value)
+        if len(data) < 2:
+            return defaults
+
+        # Strip length prefix
+        length, pos_after = decode_varint(data, 0)
+        if 0 < length == len(data) - pos_after:
+            data = data[pos_after:]
+
+        result = dict(defaults)
+        pos = 0
+        while pos < len(data):
+            field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
+            if field_num is None:
+                break
+
+            if field_num == 1 and wire_type == 2 and isinstance(value, bytes):
+                # AutoActionCfg
+                result.update(_decode_auto_action_cfg(value))
+
+            elif field_num == 2 and wire_type == 2 and isinstance(value, bytes):
+                # StationStatus
+                result.update(_decode_station_status_inner(value))
+
+            elif field_num == 5 and wire_type == 2 and isinstance(value, bytes):
+                # clean_water message → field 1: percentage
+                f, _, v, _ = decode_protobuf_field(value, 0)
+                if f == 1:
+                    result["clean_water_pct"] = v
+
+        return result
+    except Exception as err:
+        _LOGGER.debug(
+            "Error decoding station status: %s (value: %s)", err, base64_value
+        )
+        return defaults
+
+
+def _decode_auto_action_cfg(data: bytes) -> dict[str, Any]:
+    """Decode AutoActionCfg nested message from StationResponse field 1."""
+    result: dict[str, Any] = {}
+    pos = 0
+    while pos < len(data):
+        f, wt, v, pos = decode_protobuf_field(data, pos)
+        if f is None:
+            break
+        if f == 1 and wt == 2 and isinstance(v, bytes):
+            # wash config → field 3: cfg varint (0=CLOSE, 1=STANDARD)
+            wash_cfg = _get_nested_varint(v, 3)
+            if wash_cfg is not None:
+                result["auto_wash_enabled"] = wash_cfg != 0
+        elif f == 6 and wt == 2 and isinstance(v, bytes):
+            # collectdust_v2 → field 1 (sw) → field 1 (enabled)
+            inner_f, inner_wt, inner_v, _ = decode_protobuf_field(v, 0)
+            if inner_f == 1 and inner_wt == 2 and isinstance(inner_v, bytes):
+                sw_f, _, sw_v, _ = decode_protobuf_field(inner_v, 0)
+                if sw_f == 1:
+                    result["auto_empty_enabled"] = sw_v != 0
+    return result
+
+
+def _get_nested_varint(data: bytes, target_field: int) -> int | None:
+    """Get a varint value from a specific field number inside a message."""
+    pos = 0
+    while pos < len(data):
+        f, wt, v, pos = decode_protobuf_field(data, pos)
+        if f is None:
+            break
+        if f == target_field and wt == 0:
+            return v
+    return None
+
+
+def _decode_station_status_inner(data: bytes) -> dict[str, Any]:
+    """Decode StationStatus nested message from StationResponse field 2."""
+    result: dict[str, Any] = {}
+    pos = 0
+    while pos < len(data):
+        f, wt, v, pos = decode_protobuf_field(data, pos)
+        if f is None:
+            break
+        if wt != 0:
+            continue
+        if f == 1:
+            result["connected"] = v != 0
+        elif f == 2:
+            result["state"] = STATION_STATE_MAP.get(v, f"state_{v}")
+        elif f == 3:
+            result["collecting_dust"] = v != 0
+    return result
+
+
+# Manual command field numbers for StationRequest.ManualActionCmd
+_MANUAL_CMD_FIELDS = {
+    "self_maintain": 1,
+    "go_dry": 2,
+    "go_collect_dust": 3,
+    "go_selfcleaning": 4,
+}
+
+
+def encode_station_manual_cmd(cmd_name: str) -> str:
+    """
+    Encode a StationRequest with a ManualActionCmd.
+
+    StationRequest structure:
+    - field 2 (message): ManualActionCmd
+      - field N (varint): True  (N depends on cmd_name)
+
+    cmd_name: one of self_maintain, go_dry, go_collect_dust, go_selfcleaning
+    """
+    field_num = _MANUAL_CMD_FIELDS.get(cmd_name)
+    if field_num is None:
+        raise ValueError(f"Unknown station manual command: {cmd_name}")
+
+    # Build ManualActionCmd message
+    manual_cmd = encode_protobuf_field(field_num, 0, 1)
+
+    # Wrap in StationRequest field 2
+    message = encode_protobuf_field(2, 2, manual_cmd)
+
+    # Add length prefix
+    result = encode_varint(len(message)) + message
+    return base64.b64encode(result).decode()
+
+
+def encode_station_auto_cfg(
+    auto_empty: bool | None = None,
+    auto_wash: bool | None = None,
+) -> str:
+    """
+    Encode a StationRequest with AutoActionCfg.
+
+    StationRequest structure:
+    - field 1 (message): AutoActionCfg
+      - field 1 (message): wash → field 3 (varint): cfg (1=STANDARD, 0=CLOSE)
+      - field 6 (message): collectdust_v2 → field 1 (message): sw → field 1 (varint)
+
+    Only provided fields are included.
+    """
+    auto_cfg = b""
+
+    if auto_wash is not None:
+        # wash config: field 1 → { field 3: cfg value }
+        wash_inner = encode_protobuf_field(3, 0, 1 if auto_wash else 0)
+        auto_cfg += encode_protobuf_field(1, 2, wash_inner)
+
+    if auto_empty is not None:
+        # collectdust_v2: field 6 → { field 1 (sw) → { field 1: value } }
+        sw_inner = encode_protobuf_field(1, 0, 1 if auto_empty else 0)
+        sw_msg = encode_protobuf_field(1, 2, sw_inner)
+        auto_cfg += encode_protobuf_field(6, 2, sw_msg)
+
+    # Wrap in StationRequest field 1
+    message = encode_protobuf_field(1, 2, auto_cfg)
+
+    # Add length prefix
+    result = encode_varint(len(message)) + message
     return base64.b64encode(result).decode()

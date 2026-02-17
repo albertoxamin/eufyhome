@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import timedelta
 import logging
+from datetime import timedelta
 from typing import Any
 
 import aiohttp
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -68,6 +66,7 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "boost_iq": device.get_boost_iq(),
                     "cleaning_statistics": device.get_cleaning_statistics(),
                     "consumables": device.get_consumables(),
+                    "station_status": device.get_station_status(),
                 }
                 for device_id, device in self.devices.items()
             }
