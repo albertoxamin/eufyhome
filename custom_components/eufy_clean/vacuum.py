@@ -3,14 +3,28 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.vacuum import (
-    Segment,
     StateVacuumEntity,
     VacuumActivity,
     VacuumEntityFeature,
 )
+
+try:
+    from homeassistant.components.vacuum import Segment
+except ImportError:
+
+    @dataclass(slots=True)
+    class Segment:  # type: ignore[no-redef]
+        """Fallback Segment for HA versions without CLEAN_AREA."""
+
+        id: str
+        name: str
+        group: str | None = None
+
+HAS_CLEAN_AREA = hasattr(VacuumEntityFeature, "CLEAN_AREA")
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -81,7 +95,7 @@ class EufyCleanVacuum(
         self._device = device
         self._attr_unique_id = device.device_id
 
-        if device.is_novel_api:
+        if device.is_novel_api and HAS_CLEAN_AREA:
             self._attr_supported_features = (
                 self._attr_supported_features | VacuumEntityFeature.CLEAN_AREA
             )
