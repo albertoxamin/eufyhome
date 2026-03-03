@@ -53,9 +53,9 @@ class EufyCleanApi:
             "openudid": self._openudid,
             "Accept-Language": "en-US;q=1",
             "Content-Type": "application/json",
-            "clientType": "1",
+            "clientType": "2",
             "language": "en",
-            "User-Agent": "EufyHome-iOS-2.14.0-6",
+            "User-Agent": "EufyHome-Android-3.1.3-753",
             "timezone": "Europe/Berlin",
             "country": "US",
             "Connection": "keep-alive",
@@ -74,7 +74,15 @@ class EufyCleanApi:
                 headers=headers,
                 json=data,
             ) as resp:
-                result = await resp.json()
+                if resp.status != 200:
+                    text = await resp.text()
+                    _LOGGER.error(
+                        "Login failed with status %s: %s", resp.status, text
+                    )
+                    raise Exception(
+                        f"Login failed with status {resp.status}: {text}"
+                    )
+                result = await resp.json(content_type=None)
                 if result.get("access_token"):
                     self._access_token = result["access_token"]
                     _LOGGER.info("Eufy login successful")
@@ -118,7 +126,7 @@ class EufyCleanApi:
                 "https://api.eufylife.com/v1/user/user_center_info",
                 headers=headers,
             ) as resp:
-                result = await resp.json()
+                result = await resp.json(content_type=None)
                 self._user_info = result
                 if result.get("user_center_id"):
                     self._user_info["gtoken"] = hashlib.md5(
@@ -152,7 +160,7 @@ class EufyCleanApi:
                 "https://aiot-clean-api-pr.eufylife.com/app/devicemanage/get_user_mqtt_info",
                 headers=headers,
             ) as resp:
-                result = await resp.json()
+                result = await resp.json(content_type=None)
                 self._mqtt_credentials = result.get("data", {})
                 _LOGGER.debug("Got MQTT credentials")
         except aiohttp.ClientError as err:
@@ -180,7 +188,7 @@ class EufyCleanApi:
                 "https://api.eufylife.com/v1/device/v2",
                 headers=headers,
             ) as resp:
-                result = await resp.json()
+                result = await resp.json(content_type=None)
                 data = result.get("data", result)
                 devices = data.get("devices", [])
                 self._eufy_devices = devices
@@ -214,7 +222,7 @@ class EufyCleanApi:
                 headers=headers,
                 json={"attribute": 3},
             ) as resp:
-                result = await resp.json()
+                result = await resp.json(content_type=None)
                 data = result.get("data", result)
 
                 devices = []
@@ -339,7 +347,7 @@ class EufyCleanApi:
                 headers=headers,
                 json={"code": device_model},
             ) as resp:
-                result = await resp.json()
+                result = await resp.json(content_type=None)
                 if resp.status == 200:
                     _LOGGER.debug("Got device properties for %s", device_model)
                     return result.get("data", result)

@@ -6,7 +6,9 @@ import logging
 from typing import Any
 
 from homeassistant.components.vacuum import (
+    Segment,
     StateVacuumEntity,
+    VacuumActivity,
     VacuumEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -26,13 +28,14 @@ from .coordinator import EufyCleanDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# Map Eufy states to Home Assistant vacuum states
-STATE_MAP = {
-    "cleaning": "cleaning",
-    "docked": "docked",
-    "returning": "returning",
-    "idle": "idle",
-    "error": "error",
+# Map Eufy states to Home Assistant VacuumActivity enum
+ACTIVITY_MAP: dict[str, VacuumActivity] = {
+    "cleaning": VacuumActivity.CLEANING,
+    "docked": VacuumActivity.DOCKED,
+    "returning": VacuumActivity.RETURNING,
+    "idle": VacuumActivity.IDLE,
+    "paused": VacuumActivity.PAUSED,
+    "error": VacuumActivity.ERROR,
 }
 
 
@@ -59,12 +62,10 @@ class EufyCleanVacuum(
     _attr_has_entity_name = True
     _attr_name = None
     _attr_supported_features = (
-        VacuumEntityFeature.BATTERY
-        | VacuumEntityFeature.FAN_SPEED
+        VacuumEntityFeature.FAN_SPEED
         | VacuumEntityFeature.PAUSE
         | VacuumEntityFeature.RETURN_HOME
         | VacuumEntityFeature.START
-        | VacuumEntityFeature.STATE
         | VacuumEntityFeature.STOP
         | VacuumEntityFeature.LOCATE
     )
@@ -80,6 +81,11 @@ class EufyCleanVacuum(
         self._device = device
         self._attr_unique_id = device.device_id
 
+        if device.is_novel_api:
+            self._attr_supported_features = (
+                self._attr_supported_features | VacuumEntityFeature.CLEAN_AREA
+            )
+
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
 
         self._attr_device_info = DeviceInfo(
@@ -91,19 +97,13 @@ class EufyCleanVacuum(
         )
 
     @property
-    def state(self) -> str | None:
-        """Return the state of the vacuum."""
+    def activity(self) -> VacuumActivity | None:
+        """Return the activity of the vacuum."""
         if self.coordinator.data and self._device.device_id in self.coordinator.data:
             state = self.coordinator.data[self._device.device_id].get("state", "idle")
-            return STATE_MAP.get(state, "idle")
-        return self._device.get_state()
-
-    @property
-    def battery_level(self) -> int | None:
-        """Return the battery level of the vacuum."""
-        if self.coordinator.data and self._device.device_id in self.coordinator.data:
-            return self.coordinator.data[self._device.device_id].get("battery_level", 0)
-        return self._device.get_battery_level()
+            return ACTIVITY_MAP.get(state, VacuumActivity.IDLE)
+        raw_state = self._device.get_state()
+        return ACTIVITY_MAP.get(raw_state, VacuumActivity.IDLE) if raw_state else None
 
     @property
     def fan_speed(self) -> str | None:
@@ -177,6 +177,26 @@ class EufyCleanVacuum(
     async def async_locate(self, **kwargs: Any) -> None:
         """Locate the vacuum."""
         await self._device.locate()
+
+    async def async_get_segments(self) -> list[Segment]:
+        """Get the segments (rooms) that can be cleaned."""
+        rooms = self._device.get_rooms()
+        return [
+            Segment(
+                id=str(room.get("id", room.get("room_id", ""))),
+                name=room.get("name", room.get("room_name", f"Room {room.get('id', '')}")),
+            )
+            for room in rooms
+            if room.get("id") or room.get("room_id")
+        ]
+
+    async def async_clean_segments(
+        self, segment_ids: list[str], **kwargs: Any
+    ) -> None:
+        """Clean the specified segments (rooms)."""
+        room_ids = [int(sid) for sid in segment_ids]
+        await self._device.clean_rooms(room_ids)
+        await self.coordinator.async_request_refresh()
 
     @callback
     def _handle_coordinator_update(self) -> None:
