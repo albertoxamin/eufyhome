@@ -221,7 +221,11 @@ class EufyCleanMapCamera(Camera):
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
         """Return camera image."""
-        # Try to get map data from device
+        stream_image = self._device.get_map_image()
+        if stream_image:
+            return stream_image
+
+        # Fall back to DPS protobuf map parsing
         map_data = await self._get_map_data()
 
         if map_data:
@@ -356,5 +360,6 @@ class EufyCleanMapCamera(Camera):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
         return {
-            "map_available": self._map_image is not None,
+            "map_available": self._device.has_map_stream()
+            or self._map_image is not None,
         }

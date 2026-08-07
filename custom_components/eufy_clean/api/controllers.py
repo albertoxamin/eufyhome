@@ -17,6 +17,8 @@ from ..const import (
     LEGACY_DPS_MAP,
     NOVEL_DPS_MAP,
 )
+from .map_commands import build_map_get_all_command
+from .map_stream import MapStreamHandler
 from .proto_utils import (
     CLEAN_EXTENT_NARROW,
     CLEAN_EXTENT_NORMAL,
@@ -453,6 +455,14 @@ class BaseDevice:
         rooms = self._robovac_data.get("ROOMS", [])
         return rooms
 
+    def get_map_image(self) -> bytes | None:
+        """Return rendered map PNG from the MQTT biz/ stream, if available."""
+        return None
+
+    def has_map_stream(self) -> bool:
+        """Return True when a live map stream handler is active."""
+        return False
+
     def get_station_status(self) -> dict[str, Any]:
         """Get decoded station status from DPS 173."""
         defaults = {
@@ -579,6 +589,23 @@ class MqttDevice(BaseDevice):
         self._session = session
         self._mqtt_client = None
         self._connected = False
+        self._map_handler = MapStreamHandler()
+        self._cert_path: str | None = None
+        self._key_path: str | None = None
+        self._map_requested = False
+
+    def get_map_image(self) -> bytes | None:
+        """Return rendered map PNG from the MQTT biz/ stream."""
+        return self._map_handler.map_image
+
+    def has_map_stream(self) -> bool:
+        """Return True when map stream data has been received."""
+        return self._map_handler.map_data is not None
+
+    async def request_map_download(self) -> None:
+        """Trigger P2P map download via DPS 172 MAP_GET_ALL."""
+        await self.send_command(build_map_get_all_command())
+        self._map_requested = True
 
     async def connect(self) -> None:
         """Connect to MQTT broker."""
@@ -600,24 +627,27 @@ class MqttDevice(BaseDevice):
 
             if cert_pem and private_key:
                 # Write certs to temp files (in production, use proper cert handling)
+                import os
                 import tempfile
 
                 with tempfile.NamedTemporaryFile(
                     mode="w", suffix=".pem", delete=False
                 ) as cert_file:
                     cert_file.write(cert_pem)
-                    cert_path = cert_file.name
+                    self._cert_path = cert_file.name
 
                 with tempfile.NamedTemporaryFile(
                     mode="w", suffix=".key", delete=False
                 ) as key_file:
                     key_file.write(private_key)
-                    key_path = key_file.name
+                    self._key_path = key_file.name
+                    os.chmod(self._key_path, 0o600)
 
                 self._mqtt_client.tls_set(
-                    certfile=cert_path,
-                    keyfile=key_path,
+                    certfile=self._cert_path,
+                    keyfile=self._key_path,
                 )
+                self._mqtt_client.tls_insecure_set(True)
 
             # Set callbacks
             self._mqtt_client.on_connect = self._on_connect
@@ -629,6 +659,14 @@ class MqttDevice(BaseDevice):
             if endpoint:
                 self._mqtt_client.connect_async(endpoint, 8883)
                 self._mqtt_client.loop_start()
+                import asyncio
+
+                for _ in range(20):
+                    if self._connected:
+                        break
+                    await asyncio.sleep(0.5)
+                if self._connected and not self._map_requested:
+                    await self.request_map_download()
 
         except Exception as err:
             _LOGGER.error("Failed to connect MQTT: %s", err)
@@ -641,17 +679,25 @@ class MqttDevice(BaseDevice):
 
             # Subscribe to device topics
             topic_res = f"cmd/eufy_home/{self._device_model}/{self._device_id}/res"
+            topic_biz = f"biz/eufy_home/{self._device_model}/{self._device_id}/res"
             topic_smart = f"smart/mb/in/{self._device_id}"
 
             client.subscribe(topic_res)
+            client.subscribe(topic_biz)
             client.subscribe(topic_smart)
-            _LOGGER.debug("Subscribed to %s and %s", topic_res, topic_smart)
+            _LOGGER.debug("Subscribed to %s, %s, %s", topic_res, topic_biz, topic_smart)
         else:
             _LOGGER.error("MQTT connection failed with code %d", rc)
 
     def _on_message(self, client, userdata, msg):
         """Handle MQTT message."""
         try:
+            topic_biz = f"biz/eufy_home/{self._device_model}/{self._device_id}/res"
+            if msg.topic == topic_biz:
+                if self._map_handler.handle_biz_payload(msg.payload):
+                    self._notify_update()
+                return
+
             payload = json.loads(msg.payload.decode())
             data = payload.get("payload", {})
 
@@ -661,6 +707,8 @@ class MqttDevice(BaseDevice):
             dps = data.get("data", {})
             if dps:
                 self.map_data(dps)
+                work_status = self.get_work_status()
+                self._map_handler.set_tracking_cleaning(work_status == "cleaning")
                 _LOGGER.debug("Received MQTT data: %s", dps)
         except Exception as err:
             _LOGGER.error("Error processing MQTT message: %s", err)
@@ -761,3 +809,14 @@ class MqttDevice(BaseDevice):
             self._mqtt_client.loop_stop()
             self._mqtt_client.disconnect()
             self._connected = False
+
+        import os
+
+        for path in (self._cert_path, self._key_path):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        self._cert_path = None
+        self._key_path = None

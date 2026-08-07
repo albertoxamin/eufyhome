@@ -293,6 +293,14 @@ def encode_varint(value: int) -> bytes:
     return bytes(result)
 
 
+def encode_protobuf_message(message: Any, has_length: bool = True) -> str:
+    """Serialize a protobuf message to a base64 DPS value."""
+    out = message.SerializeToString()
+    if has_length:
+        out = encode_varint(len(out)) + out
+    return base64.b64encode(out).decode()
+
+
 def encode_protobuf_field(field_number: int, wire_type: int, value: Any) -> bytes:
     """
     Encode a single protobuf field.

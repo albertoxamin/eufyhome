@@ -255,6 +255,7 @@ NOVEL_DPS_MAP: Final = {
     "BATTERY_LEVEL": "163",
     "ERROR_CODE": "177",
     "MAP_DATA": "170",
+    "MULTI_MAP_MANAGE": "172",
     "VOLUME": "161",
     "SCENE_LIST": "180",
     "DND": "157",
