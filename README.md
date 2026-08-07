@@ -174,6 +174,7 @@ ruff format custom_components scripts
 This integration is based on the work of:
 
 - [Martijn Poppen](https://github.com/martijnpoppen) - Original Homey integration and eufy-clean SDK
+- [jeppesens/eufy-clean](https://github.com/jeppesens/eufy-clean) - MQTT P2P map stream logic (`biz/` protocol-41 parsing, protobuf schemas, and map rendering)
 - The Home Assistant community
 
 ## License
