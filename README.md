@@ -136,7 +136,10 @@ Room IDs are assigned by your vacuum when it maps your home. To find them:
 
 ### Camera Entity
 
-- **Map**: View your vacuum's floor map as an image (requires Pillow and lz4 libraries)
+- **Map**: View your vacuum's floor map as an image (requires Pillow)
+- Room colors and labels appear when the device sends `RoomOutline` and `RoomParams` over the MQTT map stream (often included in a full map backup, or as separate biz/ frames)
+- No-go zones (red), no-mop zones (orange), and virtual walls are drawn when `RestrictedZone` data arrives on the biz/ stream or inside a `MapBackup`
+- Configure clockwise rotation (0/90/180/270°) under integration **Options** (default: 90°)
 
 ## Troubleshooting
 

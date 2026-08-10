@@ -10,6 +10,9 @@ MANUFACTURER: Final = "Eufy"
 # Configuration
 CONF_USERNAME: Final = "username"
 CONF_PASSWORD: Final = "password"
+CONF_MAP_ROTATION: Final = "map_rotation"
+DEFAULT_MAP_ROTATION: Final = 90
+MAP_ROTATION_OPTIONS: Final = (0, 90, 180, 270)
 
 # Attributes
 ATTR_BATTERY_LEVEL: Final = "battery_level"

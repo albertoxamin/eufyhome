@@ -359,7 +359,18 @@ class EufyCleanMapCamera(Camera):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
+        room_names = self._device.get_room_names()
+        zone_counts = self._device.get_restricted_zone_counts()
         return {
             "map_available": self._device.has_map_stream()
             or self._map_image is not None,
+            "room_colors": self._device.has_room_colors(),
+            "restricted_zones": self._device.has_restricted_zones(),
+            "virtual_walls": zone_counts["virtual_walls"],
+            "forbidden_zones": zone_counts["forbidden_zones"],
+            "ban_mop_zones": zone_counts["ban_mop_zones"],
+            "rooms": [
+                {"id": room_id, "name": name}
+                for room_id, name in sorted(room_names.items())
+            ],
         }

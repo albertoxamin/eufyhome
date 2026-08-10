@@ -22,6 +22,40 @@ _PIXEL_COLORS: dict[int, tuple[int, int, int]] = {
     3: (200, 200, 200), # CLEANED / carpet — same as free floor so it blends in
 }
 
+# Background outside the room partition mask (matches app-style clipping).
+_BG_OUTSIDE: tuple[int, int, int] = (45, 45, 45)
+
+# Special room-mask ids from p2pdata.proto MapPixels encoding.
+_ROOM_MASK_GAP = 61
+_ROOM_MASK_OBSTACLE = 62
+
+
+def _is_valid_room_id(rid: int) -> bool:
+    return 1 <= rid <= 31
+
+
+def _color_with_room_mask(
+    pv: int,
+    rid: int,
+    sub_type: int,
+    palette_len: int,
+) -> tuple[int, int, int]:
+    """Render using the room partition mask to clip lidar exploration noise.
+
+    Inside a labelled room: solid room colour except true walls.
+    Outside rooms: dark background with only obstacle pixels kept (wall clip).
+    """
+    if rid == _ROOM_MASK_OBSTACLE or pv == 1 or sub_type == 1:
+        return _PIXEL_COLORS[1]
+    if _is_valid_room_id(rid):
+        return _ROOM_PALETTE[1 + (rid - 1) % (palette_len - 1)]
+    if rid == _ROOM_MASK_GAP:
+        # Inter-room corridors: flat floor, not lidar speckle.
+        return _PIXEL_COLORS[2]
+    # Outside partitioned rooms (rid 0, or unused ids): clip exploration noise.
+    return _BG_OUTSIDE
+
+
 # Room ID → RGB.  Index 0 = wall/outside (unused in combined render); 1-N cycle.
 _ROOM_PALETTE: list[tuple[int, int, int]] = [
     (45, 45, 45),
@@ -110,6 +144,10 @@ class MapData:
     forbidden_zones: list[list[tuple[int, int]]] = field(default_factory=list)
     ban_mop_zones: list[list[tuple[int, int]]] = field(default_factory=list)
 
+    def has_restricted_zones(self) -> bool:
+        """Return True when any no-go, no-mop, or virtual-wall data is present."""
+        return bool(self.virtual_walls or self.forbidden_zones or self.ban_mop_zones)
+
     def room_id_at_normalized(self, nx: float, ny: float) -> int:
         """Return the room id under a normalized point on the *rendered* map image.
 
@@ -140,6 +178,43 @@ class MapData:
             if 0 <= idx < len(self.room_pixels):
                 return self.room_pixels[idx] >> 2  # low 2 bits are sub-type, not id
         return 0
+
+
+@dataclass
+class RestrictedZoneLayers:
+    """No-go, no-mop, and virtual-wall geometry from RestrictedZone proto."""
+
+    virtual_walls: list[tuple[tuple[int, int], tuple[int, int]]] = field(
+        default_factory=list
+    )
+    forbidden_zones: list[list[tuple[int, int]]] = field(default_factory=list)
+    ban_mop_zones: list[list[tuple[int, int]]] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (
+            self.virtual_walls or self.forbidden_zones or self.ban_mop_zones
+        )
+
+
+def _parse_restricted_zone(rz: Any) -> RestrictedZoneLayers:
+    layers = RestrictedZoneLayers()
+    for wall in rz.virtual_walls:
+        layers.virtual_walls.append(
+            ((wall.p0.x, wall.p0.y), (wall.p1.x, wall.p1.y))
+        )
+    for zone in rz.forbidden_zones:
+        layers.forbidden_zones.append(_quad_points(zone))
+    for zone in rz.ban_mop_zones:
+        layers.ban_mop_zones.append(_quad_points(zone))
+    return layers
+
+
+def _apply_restricted_layers(
+    map_data: MapData, layers: RestrictedZoneLayers
+) -> None:
+    map_data.virtual_walls = list(layers.virtual_walls)
+    map_data.forbidden_zones = list(layers.forbidden_zones)
+    map_data.ban_mop_zones = list(layers.ban_mop_zones)
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +265,38 @@ def _quad_points(q: Any) -> list[tuple[int, int]]:
     return [(q.p0.x, q.p0.y), (q.p1.x, q.p1.y), (q.p2.x, q.p2.y), (q.p3.x, q.p3.y)]
 
 
+def _rotate_image(img: Image.Image, degrees: int) -> Image.Image:
+    """Rotate the rendered map clockwise (0, 90, 180, or 270 degrees)."""
+    degrees = int(degrees) % 360
+    if degrees == 0:
+        return img
+    transpose = {
+        90: Image.Transpose.ROTATE_270,
+        180: Image.Transpose.ROTATE_180,
+        270: Image.Transpose.ROTATE_90,
+    }.get(degrees)
+    if transpose is None:
+        _LOGGER.warning("Unsupported map rotation %s; using 0", degrees)
+        return img
+    return img.transpose(transpose)
+
+
+def _decode_room_pixels(pixels: bytes, pixel_size: int) -> bytes:
+    if len(pixels) != pixel_size:
+        return _lz4_block_decompress(pixels, pixel_size)
+    return pixels
+
+
+def _room_names_from_params(rp: Any) -> dict[int, str]:
+    names: dict[int, str] = {}
+    for room in rp.rooms:
+        name = room.name.strip()
+        if not name:
+            name = _ROOM_SCENE_NAMES.get(room.scene.type, f"ROOM {room.id}")
+        names[room.id] = name
+    return names
+
+
 # ---------------------------------------------------------------------------
 # Main render
 # ---------------------------------------------------------------------------
@@ -202,6 +309,7 @@ def render_map_png(
     robot_status: str | None = None,
     max_px: int = _MAX_PNG_PX,
     robot_style: str = "googly",
+    rotation: int = 0,
 ) -> bytes:
     """Render a PNG from MapData using Pillow.
 
@@ -246,13 +354,7 @@ def render_map_png(
                     sub_type = rpx & 3
                 else:
                     rid = sub_type = 0
-                if rid > 0:
-                    if sub_type == 0 or pv in (2, 3):
-                        color = _ROOM_PALETTE[1 + (rid - 1) % (palette_len - 1)]
-                    else:
-                        color = _PIXEL_COLORS.get(pv, (30, 30, 30))
-                else:
-                    color = _PIXEL_COLORS.get(pv, (30, 30, 30))
+                color = _color_with_room_mask(pv, rid, sub_type, palette_len)
                 colors.append(color)
                 if _has_room_names and rid > 0 and rid in map_data.room_names:
                     if rid not in src_centroids:
@@ -416,8 +518,11 @@ def render_map_png(
                     draw.point((bpx, bpy), fill=(20, 20, 20))
 
     # ------------------------------------------------------------------
-    # Step 8 — encode PNG
+    # Step 8 — optional rotation + encode PNG
     # ------------------------------------------------------------------
+    if rotation:
+        img = _rotate_image(img, rotation)
+
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=False, compress_level=3)
     return buf.getvalue()
@@ -452,28 +557,20 @@ def try_extract_map_data(hex_data: str) -> MapData | None:
 
             ro = backup.rooms
             if ro.pixels and ro.pixel_size and ro.width and ro.height:
-                rp = ro.pixels
-                if len(rp) != ro.pixel_size:
-                    rp = _lz4_block_decompress(rp, ro.pixel_size)
-                room_pixels = rp
+                room_pixels = _decode_room_pixels(ro.pixels, ro.pixel_size)
                 ro_width, ro_height = ro.width, ro.height
                 ro_origin_x, ro_origin_y = ro.origin.x, ro.origin.y
                 _LOGGER.debug("RoomOutline decoded: %dx%d origin=(%d,%d)", ro_width, ro_height, ro_origin_x, ro_origin_y)
 
-            for room in backup.room_params.rooms:
-                name = room.name.strip()
-                if not name:
-                    name = _ROOM_SCENE_NAMES.get(room.scene.type, f"ROOM {room.id}")
-                room_names[room.id] = name
-            _LOGGER.debug("RoomParams room_names: %s", room_names)
+            if backup.room_params.rooms:
+                room_names = _room_names_from_params(backup.room_params)
+                _LOGGER.debug("RoomParams room_names: %s", room_names)
 
             rz = backup.restricted_zone
-            for wall in rz.virtual_walls:
-                virtual_walls.append(((wall.p0.x, wall.p0.y), (wall.p1.x, wall.p1.y)))
-            for zone in rz.forbidden_zones:
-                forbidden_zones.append(_quad_points(zone))
-            for zone in rz.ban_mop_zones:
-                ban_mop_zones.append(_quad_points(zone))
+            layers = _parse_restricted_zone(rz)
+            virtual_walls = layers.virtual_walls
+            forbidden_zones = layers.forbidden_zones
+            ban_mop_zones = layers.ban_mop_zones
 
             _LOGGER.debug(
                 "RestrictedZone: %d walls, %d forbidden, %d ban-mop",
@@ -524,6 +621,55 @@ def try_extract_map_data(hex_data: str) -> MapData | None:
         forbidden_zones=forbidden_zones,
         ban_mop_zones=ban_mop_zones,
     )
+
+
+def try_extract_room_outline(
+    hex_data: str,
+) -> tuple[bytes, int, int, int, int] | None:
+    """Extract room color mask from a biz/ RoomOutline frame."""
+    try:
+        proto_bytes = _hex_to_proto_bytes(hex_data)
+        ro = stream_pb2.RoomOutline().FromString(proto_bytes)
+        if ro.pixels and ro.pixel_size and ro.width and ro.height:
+            pixels = _decode_room_pixels(ro.pixels, ro.pixel_size)
+            return pixels, ro.width, ro.height, ro.origin.x, ro.origin.y
+    except Exception:
+        pass
+    return None
+
+
+def try_extract_room_params(hex_data: str) -> dict[int, str] | None:
+    """Extract room id → name mapping from a biz/ RoomParams frame."""
+    try:
+        proto_bytes = _hex_to_proto_bytes(hex_data)
+        rp = stream_pb2.RoomParams().FromString(proto_bytes)
+        if not rp.rooms:
+            return None
+        names = _room_names_from_params(rp)
+        return names or None
+    except Exception:
+        pass
+    return None
+
+
+def try_extract_restricted_zone(hex_data: str) -> RestrictedZoneLayers | None:
+    """Extract no-go / no-mop / virtual-wall data from a biz/ RestrictedZone frame."""
+    try:
+        proto_bytes = _hex_to_proto_bytes(hex_data)
+        rz = stream_pb2.RestrictedZone().FromString(proto_bytes)
+        layers = _parse_restricted_zone(rz)
+        if layers.is_empty():
+            return None
+        _LOGGER.debug(
+            "RestrictedZone frame: %d walls, %d forbidden, %d ban-mop",
+            len(layers.virtual_walls),
+            len(layers.forbidden_zones),
+            len(layers.ban_mop_zones),
+        )
+        return layers
+    except Exception:
+        pass
+    return None
 
 
 def try_extract_map_description(hex_data: str) -> tuple[int, str] | None:
@@ -599,7 +745,7 @@ def _pose_to_pixel(
 class MapStreamHandler:
     """Accumulates map stream frames from biz/ MQTT protocol-41 messages."""
 
-    def __init__(self) -> None:
+    def __init__(self, rotation: int = 0) -> None:
         self.map_data: MapData | None = None
         self.map_image: bytes | None = None
         self.map_channel_id: int | None = None
@@ -608,6 +754,58 @@ class MapStreamHandler:
         self._robot_trail: list[tuple[int, int]] = []
         self._dock_pixel: tuple[int, int] | None = None
         self._tracking_cleaning = False
+        self._rotation = rotation
+        self._pending_room_names: dict[int, str] = {}
+        self._pending_room_outline: tuple[bytes, int, int, int, int] | None = None
+        self._pending_restricted_zones: RestrictedZoneLayers | None = None
+
+    def set_rotation(self, rotation: int) -> None:
+        """Set clockwise rotation applied when rendering (0, 90, 180, 270)."""
+        self._rotation = int(rotation) % 360
+
+    def _apply_pending_layers(self, map_data: MapData) -> None:
+        if self._pending_room_names:
+            map_data.room_names.update(self._pending_room_names)
+        if self._pending_room_outline:
+            pixels, width, height, origin_x, origin_y = self._pending_room_outline
+            map_data.room_pixels = pixels
+            map_data.room_outline_width = width
+            map_data.room_outline_height = height
+            map_data.room_outline_origin_x = origin_x
+            map_data.room_outline_origin_y = origin_y
+        if self._pending_restricted_zones and not map_data.has_restricted_zones():
+            _apply_restricted_layers(map_data, self._pending_restricted_zones)
+
+    def _merge_room_params(self, names: dict[int, str]) -> bool:
+        self._pending_room_names.update(names)
+        if self.map_data is None:
+            return False
+        self.map_data.room_names.update(names)
+        self._render()
+        return True
+
+    def _merge_room_outline(
+        self, pixels: bytes, width: int, height: int, origin_x: int, origin_y: int
+    ) -> bool:
+        outline = (pixels, width, height, origin_x, origin_y)
+        self._pending_room_outline = outline
+        if self.map_data is None:
+            return False
+        self.map_data.room_pixels = pixels
+        self.map_data.room_outline_width = width
+        self.map_data.room_outline_height = height
+        self.map_data.room_outline_origin_x = origin_x
+        self.map_data.room_outline_origin_y = origin_y
+        self._render()
+        return True
+
+    def _merge_restricted_zone(self, layers: RestrictedZoneLayers) -> bool:
+        self._pending_restricted_zones = layers
+        if self.map_data is None:
+            return False
+        _apply_restricted_layers(self.map_data, layers)
+        self._render()
+        return True
 
     def handle_biz_payload(self, payload: bytes) -> bool:
         """Process a biz/ MQTT payload. Returns True when map image was updated."""
@@ -623,6 +821,16 @@ class MapStreamHandler:
             if self.last_seen_maps.get(map_id) != name:
                 self.last_seen_maps[map_id] = name
             return False
+
+        if names := try_extract_room_params(hex_data):
+            return self._merge_room_params(names)
+
+        if outline := try_extract_room_outline(hex_data):
+            pixels, width, height, origin_x, origin_y = outline
+            return self._merge_room_outline(pixels, width, height, origin_x, origin_y)
+
+        if zones := try_extract_restricted_zone(hex_data):
+            return self._merge_restricted_zone(zones)
 
         if len(hex_data) < 200:
             pose = try_decode_as_dynamic_data(hex_data)
@@ -666,11 +874,13 @@ class MapStreamHandler:
             map_data.room_outline_height = self.map_data.room_outline_height
             map_data.room_outline_origin_x = self.map_data.room_outline_origin_x
             map_data.room_outline_origin_y = self.map_data.room_outline_origin_y
-            map_data.room_names = self.map_data.room_names
+            if self.map_data.room_names:
+                map_data.room_names = dict(self.map_data.room_names)
             map_data.virtual_walls = self.map_data.virtual_walls
             map_data.forbidden_zones = self.map_data.forbidden_zones
             map_data.ban_mop_zones = self.map_data.ban_mop_zones
 
+        self._apply_pending_layers(map_data)
         self.map_data = map_data
         self._render()
         return True
@@ -684,6 +894,38 @@ class MapStreamHandler:
             self._dock_pixel = self._robot_pixel
         self._tracking_cleaning = active
 
+    def has_restricted_zones(self) -> bool:
+        """Return True when zone geometry is available on the map or pending."""
+        if self.map_data and self.map_data.has_restricted_zones():
+            return True
+        return (
+            self._pending_restricted_zones is not None
+            and not self._pending_restricted_zones.is_empty()
+        )
+
+    def restricted_zone_counts(self) -> dict[str, int]:
+        """Return counts of virtual walls and zone polygons."""
+        source = self.map_data
+        if source is None or not source.has_restricted_zones():
+            source = self._pending_restricted_zones
+        if source is None:
+            return {
+                "virtual_walls": 0,
+                "forbidden_zones": 0,
+                "ban_mop_zones": 0,
+            }
+        if isinstance(source, RestrictedZoneLayers):
+            return {
+                "virtual_walls": len(source.virtual_walls),
+                "forbidden_zones": len(source.forbidden_zones),
+                "ban_mop_zones": len(source.ban_mop_zones),
+            }
+        return {
+            "virtual_walls": len(source.virtual_walls),
+            "forbidden_zones": len(source.forbidden_zones),
+            "ban_mop_zones": len(source.ban_mop_zones),
+        }
+
     def _render(self) -> None:
         if self.map_data is None:
             return
@@ -693,6 +935,7 @@ class MapStreamHandler:
                 robot_pixel=self._robot_pixel,
                 robot_trail=self._robot_trail or None,
                 dock_pixel=self._dock_pixel,
+                rotation=self._rotation,
             )
         except Exception as exc:
             _LOGGER.debug("Map render failed: %s", exc)

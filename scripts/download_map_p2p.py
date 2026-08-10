@@ -90,6 +90,13 @@ async def main() -> None:
         help="Output PNG path",
     )
     parser.add_argument("--map-id", type=int, default=0, help="Optional cloud map id for MAP_GET_ONE")
+    parser.add_argument(
+        "--rotation",
+        type=int,
+        default=90,
+        choices=(0, 90, 180, 270),
+        help="Clockwise rotation applied to the rendered PNG (default: 90)",
+    )
     args = parser.parse_args()
 
     if str(REPO_ROOT) not in sys.path:
@@ -135,7 +142,7 @@ async def main() -> None:
     topic_req = f"cmd/eufy_home/{device_model}/{device_id}/req"
     topic_out = f"smart/mb/out/{device_id}"
 
-    map_handler = MapStreamHandler()
+    map_handler = MapStreamHandler(rotation=args.rotation)
     map_received = asyncio.Event()
     biz_count = 0
 
@@ -191,12 +198,28 @@ async def main() -> None:
             updated = map_handler.handle_biz_payload(msg.payload)
             if map_handler.map_data:
                 md = map_handler.map_data
+                zones = map_handler.restricted_zone_counts()
+                zone_note = ""
+                if map_handler.has_restricted_zones():
+                    zone_note = (
+                        f", zones={zones['forbidden_zones']} no-go/"
+                        f"{zones['ban_mop_zones']} no-mop/"
+                        f"{zones['virtual_walls']} walls"
+                    )
                 print(
                     f"  biz #{biz_count}: channel update, map {md.width}x{md.height} "
-                    f"(rendered={'yes' if updated else 'no'})"
+                    f"(rendered={'yes' if updated else 'no'}){zone_note}"
                 )
             else:
                 print(f"  biz #{biz_count}: {len(msg.payload)} bytes (no map yet)")
+            if map_handler.has_restricted_zones() and not map_handler.map_data:
+                zones = map_handler.restricted_zone_counts()
+                print(
+                    f"           restricted zones pending: "
+                    f"{zones['forbidden_zones']} no-go, "
+                    f"{zones['ban_mop_zones']} no-mop, "
+                    f"{zones['virtual_walls']} walls"
+                )
             if map_handler.map_image:
                 map_received.set()
 

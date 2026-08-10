@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import EufyCleanApi
 from .api.controllers import BaseDevice, CloudDevice, MqttDevice
-from .const import DOMAIN, UPDATE_INTERVAL
+from .const import CONF_MAP_ROTATION, DEFAULT_MAP_ROTATION, DOMAIN, UPDATE_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -96,6 +96,9 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     continue
 
                 is_mqtt = device_data.get("mqtt", False)
+                map_rotation = int(
+                    self.entry.options.get(CONF_MAP_ROTATION, DEFAULT_MAP_ROTATION)
+                )
 
                 if is_mqtt:
                     device = MqttDevice(
@@ -104,6 +107,7 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         openudid=self.api.openudid,
                         user_info=self.api.user_info,
                         session=self._session,
+                        map_rotation=map_rotation,
                     )
                 else:
                     device = CloudDevice(

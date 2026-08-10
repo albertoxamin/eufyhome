@@ -12,7 +12,14 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .api import EufyCleanApi
-from .const import DOMAIN
+from .const import (
+    CONF_MAP_ROTATION,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DEFAULT_MAP_ROTATION,
+    DOMAIN,
+    MAP_ROTATION_OPTIONS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +43,14 @@ class EufyCleanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Eufy Clean."""
 
     VERSION = 1
+
+    @staticmethod
+    @config_entries.callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> EufyCleanOptionsFlowHandler:
+        """Return the options flow handler."""
+        return EufyCleanOptionsFlowHandler(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -119,4 +134,31 @@ class EufyCleanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
+        )
+
+
+class EufyCleanOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle map display options."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage map rendering options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        options = self.config_entry.options
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_MAP_ROTATION,
+                        default=options.get(CONF_MAP_ROTATION, DEFAULT_MAP_ROTATION),
+                    ): vol.In(MAP_ROTATION_OPTIONS),
+                }
+            ),
         )

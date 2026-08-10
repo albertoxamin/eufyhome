@@ -28,6 +28,17 @@
       "reauth_successful": "Re-authentication was successful"
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Map options",
+        "description": "Adjust how the live map camera image is rendered.",
+        "data": {
+          "map_rotation": "Clockwise rotation (degrees)"
+        }
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "work_status": {

@@ -10,6 +10,7 @@ from typing import Any
 import aiohttp
 
 from ..const import (
+    DEFAULT_MAP_ROTATION,
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_GET_STATE,
     EUFY_CLEAN_SPEEDS,
@@ -463,6 +464,26 @@ class BaseDevice:
         """Return True when a live map stream handler is active."""
         return False
 
+    def get_room_names(self) -> dict[int, str]:
+        """Return discovered room id → name mapping, if available."""
+        return {}
+
+    def has_room_colors(self) -> bool:
+        """Return True when room color mask data is available."""
+        return False
+
+    def has_restricted_zones(self) -> bool:
+        """Return True when no-go / no-mop zone data is available."""
+        return False
+
+    def get_restricted_zone_counts(self) -> dict[str, int]:
+        """Return counts of virtual walls and zone polygons."""
+        return {
+            "virtual_walls": 0,
+            "forbidden_zones": 0,
+            "ban_mop_zones": 0,
+        }
+
     def get_station_status(self) -> dict[str, Any]:
         """Get decoded station status from DPS 173."""
         defaults = {
@@ -580,6 +601,7 @@ class MqttDevice(BaseDevice):
         openudid: str,
         user_info: dict[str, Any],
         session: aiohttp.ClientSession,
+        map_rotation: int = DEFAULT_MAP_ROTATION,
     ) -> None:
         """Initialize the MQTT device."""
         super().__init__(device_config)
@@ -589,7 +611,7 @@ class MqttDevice(BaseDevice):
         self._session = session
         self._mqtt_client = None
         self._connected = False
-        self._map_handler = MapStreamHandler()
+        self._map_handler = MapStreamHandler(rotation=map_rotation)
         self._cert_path: str | None = None
         self._key_path: str | None = None
         self._map_requested = False
@@ -601,6 +623,34 @@ class MqttDevice(BaseDevice):
     def has_map_stream(self) -> bool:
         """Return True when map stream data has been received."""
         return self._map_handler.map_data is not None
+
+    def get_room_names(self) -> dict[int, str]:
+        """Return room names from the map stream, if available."""
+        if self._map_handler.map_data and self._map_handler.map_data.room_names:
+            return dict(self._map_handler.map_data.room_names)
+        return dict(self._map_handler._pending_room_names)
+
+    def has_room_colors(self) -> bool:
+        """Return True when a room color mask has been received."""
+        md = self._map_handler.map_data
+        if md and md.room_pixels and md.room_outline_width:
+            return True
+        return self._map_handler._pending_room_outline is not None
+
+    def has_restricted_zones(self) -> bool:
+        """Return True when restricted-zone geometry has been received."""
+        return self._map_handler.has_restricted_zones()
+
+    def get_restricted_zone_counts(self) -> dict[str, int]:
+        """Return counts of virtual walls and zone polygons."""
+        return self._map_handler.restricted_zone_counts()
+
+    def set_map_rotation(self, rotation: int) -> None:
+        """Update map image rotation and re-render."""
+        self._map_handler.set_rotation(rotation)
+        if self._map_handler.map_data is not None:
+            self._map_handler._render()
+            self._notify_update()
 
     async def request_map_download(self) -> None:
         """Trigger P2P map download via DPS 172 MAP_GET_ALL."""
