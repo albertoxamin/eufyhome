@@ -25,6 +25,9 @@ _PIXEL_COLORS: dict[int, tuple[int, int, int]] = {
 # Background outside the room partition mask (matches app-style clipping).
 _BG_OUTSIDE: tuple[int, int, int] = (45, 45, 45)
 
+# Darker trace for cleaned / visited pixels inside a room.
+_PATH_INSIDE_ROOM: tuple[int, int, int] = (95, 95, 95)
+
 # Special room-mask ids from p2pdata.proto MapPixels encoding.
 _ROOM_MASK_GAP = 61
 _ROOM_MASK_OBSTACLE = 62
@@ -32,6 +35,10 @@ _ROOM_MASK_OBSTACLE = 62
 
 def _is_valid_room_id(rid: int) -> bool:
     return 1 <= rid <= 31
+
+
+def _tint(rgb: tuple[int, int, int], delta: int) -> tuple[int, int, int]:
+    return tuple(max(0, min(255, c + delta)) for c in rgb)
 
 
 def _color_with_room_mask(
@@ -42,15 +49,22 @@ def _color_with_room_mask(
 ) -> tuple[int, int, int]:
     """Render using the room partition mask to clip lidar exploration noise.
 
-    Inside a labelled room: solid room colour except true walls.
+    Inside a labelled room: solid room colour except true walls and the
+    darker cleaning trace (unknown / carpet pixels).
     Outside rooms: dark background with only obstacle pixels kept (wall clip).
     """
     if rid == _ROOM_MASK_OBSTACLE or pv == 1 or sub_type == 1:
         return _PIXEL_COLORS[1]
     if _is_valid_room_id(rid):
-        return _ROOM_PALETTE[1 + (rid - 1) % (palette_len - 1)]
+        base = _ROOM_PALETTE[1 + (rid - 1) % (palette_len - 1)]
+        if pv == 0:
+            return _PATH_INSIDE_ROOM
+        if pv == 3:
+            return _tint(base, -35)
+        return base
     if rid == _ROOM_MASK_GAP:
-        # Inter-room corridors: flat floor, not lidar speckle.
+        if pv == 0:
+            return _PATH_INSIDE_ROOM
         return _PIXEL_COLORS[2]
     # Outside partitioned rooms (rid 0, or unused ids): clip exploration noise.
     return _BG_OUTSIDE
@@ -305,6 +319,7 @@ def render_map_png(
     map_data: MapData,
     robot_pixel: tuple[int, int] | None = None,
     robot_trail: list[tuple[int, int]] | None = None,
+    cleaning_path: list[tuple[int, int, bool]] | None = None,
     dock_pixel: tuple[int, int] | None = None,
     robot_status: str | None = None,
     max_px: int = _MAX_PNG_PX,
@@ -450,14 +465,21 @@ def render_map_png(
                 draw.point((bpx, bpy), fill=(100, 75, 0))
 
     # ------------------------------------------------------------------
-    # Step 5 — cleaning trail
+    # Step 5 — cleaning trail / streamed path
     # ------------------------------------------------------------------
     _TRAIL = (255, 140, 0)
     _MAX_TRAIL_JUMP_SQ = 400 * 400
-    if robot_trail:
-        raw_pts = list(robot_trail)
+
+    def _draw_path_segments(
+        raw_pts: list[tuple[int, int]],
+        breaks: list[bool] | None = None,
+    ) -> None:
+        if len(raw_pts) < 2:
+            return
         out_pts = [_to_out(tx, ty) for tx, ty in raw_pts]
         for i in range(len(raw_pts) - 1):
+            if breaks and i + 1 < len(breaks) and breaks[i + 1]:
+                continue
             ddx = raw_pts[i + 1][0] - raw_pts[i][0]
             ddy = raw_pts[i + 1][1] - raw_pts[i][1]
             if ddx * ddx + ddy * ddy <= _MAX_TRAIL_JUMP_SQ:
@@ -465,6 +487,20 @@ def render_map_png(
         ox, oy = out_pts[-1]
         if 0 <= ox < out_w and 0 <= oy < out_h:
             draw.point((ox, oy), fill=_TRAIL)
+
+    if cleaning_path:
+        path_pixels: list[tuple[int, int]] = []
+        path_breaks: list[bool] = []
+        for x_cm, y_cm, break_before in cleaning_path:
+            px = _pose_to_pixel(map_data, x_cm, y_cm)
+            if px is None:
+                continue
+            path_pixels.append(px)
+            path_breaks.append(break_before)
+        _draw_path_segments(path_pixels, path_breaks)
+
+    if robot_trail:
+        _draw_path_segments(list(robot_trail))
 
     # ------------------------------------------------------------------
     # Step 6 — room name labels (after trail so labels render on top)
@@ -696,6 +732,71 @@ def try_extract_map_description(hex_data: str) -> tuple[int, str] | None:
     return None
 
 
+def _decode_path_xy(xy: int) -> tuple[int, int]:
+    x = xy & 0xFFFF
+    y = (xy >> 16) & 0xFFFF
+    if x >= 0x8000:
+        x -= 0x10000
+    if y >= 0x8000:
+        y -= 0x10000
+    return x, y
+
+
+def _append_path_point(
+    points: list[tuple[int, int, bool]],
+    xy: int,
+    flags: int,
+) -> None:
+    if not xy and not flags:
+        return
+    point_type = flags & 0xF
+    if point_type == 15:  # HIDE
+        return
+    if not ((flags >> 5) & 1):  # show_trajectory_flag
+        return
+    x, y = _decode_path_xy(xy)
+    break_before = bool((flags >> 4) & 1)
+    points.append((x, y, break_before))
+
+
+def _collect_path_points(data: bytes, out: list[tuple[int, int, bool]]) -> None:
+    from .proto_utils import decode_protobuf_field
+
+    pos = 0
+    while pos < len(data):
+        field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
+        if field_num is None:
+            break
+        if wire_type != 2 or not isinstance(value, bytes):
+            continue
+        try:
+            pp = stream_pb2.PathPoint().FromString(value)
+            if pp.xy or pp.flags:
+                _append_path_point(out, pp.xy, pp.flags)
+                continue
+        except Exception:
+            pass
+        if len(value) >= 4:
+            _collect_path_points(value, out)
+
+
+def try_extract_path_points(hex_data: str) -> list[tuple[int, int, bool]] | None:
+    """Decode a biz/ path frame. Returns [(x_cm, y_cm, break_before), ...]."""
+    try:
+        proto_bytes = _hex_to_proto_bytes(hex_data)
+    except Exception:
+        return None
+
+    points: list[tuple[int, int, bool]] = []
+    try:
+        pp = stream_pb2.PathPoint().FromString(proto_bytes)
+        _append_path_point(points, pp.xy, pp.flags)
+    except Exception:
+        pass
+    _collect_path_points(proto_bytes, points)
+    return points or None
+
+
 def try_decode_as_dynamic_data(hex_data: str) -> tuple[int, int, int] | None:
     """Decode channel as DynamicData robot pose. Returns (x_cm, y_cm, theta_crad) or None."""
     try:
@@ -752,6 +853,7 @@ class MapStreamHandler:
         self.last_seen_maps: dict[int, str] = {}
         self._robot_pixel: tuple[int, int] | None = None
         self._robot_trail: list[tuple[int, int]] = []
+        self._cleaning_path: list[tuple[int, int, bool]] = []
         self._dock_pixel: tuple[int, int] | None = None
         self._tracking_cleaning = False
         self._rotation = rotation
@@ -833,6 +935,11 @@ class MapStreamHandler:
             return self._merge_restricted_zone(zones)
 
         if len(hex_data) < 200:
+            if path_pts := try_extract_path_points(hex_data):
+                self._cleaning_path.extend(path_pts)
+                if self.map_data is not None:
+                    self._render()
+                    return True
             pose = try_decode_as_dynamic_data(hex_data)
             if pose is not None and self.map_data is not None:
                 robot_px = _pose_to_pixel(self.map_data, pose[0], pose[1])
@@ -889,6 +996,7 @@ class MapStreamHandler:
         """Enable trail accumulation while the robot is cleaning."""
         if active and not self._tracking_cleaning:
             self._robot_trail.clear()
+            self._cleaning_path.clear()
             self._robot_pixel = None
         elif not active and self._tracking_cleaning and self._robot_pixel is not None:
             self._dock_pixel = self._robot_pixel
@@ -934,6 +1042,7 @@ class MapStreamHandler:
                 self.map_data,
                 robot_pixel=self._robot_pixel,
                 robot_trail=self._robot_trail or None,
+                cleaning_path=self._cleaning_path or None,
                 dock_pixel=self._dock_pixel,
                 rotation=self._rotation,
             )
