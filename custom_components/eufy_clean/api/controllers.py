@@ -106,6 +106,11 @@ class BaseDevice:
         """Add callback for data updates."""
         self._update_callbacks.append(callback)
 
+    def remove_update_callback(self, callback: Callable[[], None]) -> None:
+        """Remove a previously registered data-update callback."""
+        if callback in self._update_callbacks:
+            self._update_callbacks.remove(callback)
+
     def _notify_update(self) -> None:
         """Notify all callbacks of data update."""
         for callback in self._update_callbacks:
@@ -450,11 +455,15 @@ class BaseDevice:
         return decode_consumables(raw)
 
     def get_rooms(self) -> list[dict[str, Any]]:
-        """Get list of available rooms from device data."""
-        # Rooms are typically stored in ROOM_PARAMS or similar
-        # This would need to be populated from the device's map data
+        """Get list of available rooms (vacuum segments)."""
+        names = self.get_room_names()
+        if names:
+            return [
+                {"id": room_id, "name": name}
+                for room_id, name in sorted(names.items())
+            ]
         rooms = self._robovac_data.get("ROOMS", [])
-        return rooms
+        return rooms if isinstance(rooms, list) else []
 
     def get_map_image(self) -> bytes | None:
         """Return rendered map PNG from the MQTT biz/ stream, if available."""

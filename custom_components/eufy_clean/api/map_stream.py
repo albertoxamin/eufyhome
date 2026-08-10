@@ -881,7 +881,7 @@ class MapStreamHandler:
     def _merge_room_params(self, names: dict[int, str]) -> bool:
         self._pending_room_names.update(names)
         if self.map_data is None:
-            return False
+            return bool(names)
         self.map_data.room_names.update(names)
         self._render()
         return True

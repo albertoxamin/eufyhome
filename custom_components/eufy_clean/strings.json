@@ -53,6 +53,11 @@
       "error_code": {
         "name": "Error"
       }
+    },
+    "select": {
+      "clean_room": {
+        "name": "Clean Room"
+      }
     }
   },
   "services": {

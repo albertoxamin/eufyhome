@@ -53,6 +53,29 @@ ACTIVITY_MAP: dict[str, VacuumActivity] = {
 }
 
 
+def _rooms_to_segments(rooms: list[dict[str, Any]]) -> list[Segment]:
+    """Build HA Segment objects from room metadata."""
+    segments: list[Segment] = []
+    for room in rooms:
+        raw_id = room.get("id", room.get("room_id"))
+        if raw_id is None:
+            continue
+        name = room.get("name") or room.get("room_name") or f"Room {raw_id}"
+        segments.append(Segment(id=str(raw_id), name=name))
+    return segments
+
+
+def _segments_to_attributes(segments: list[Segment]) -> list[dict[str, Any]]:
+    """Serialize segments for vacuum state attributes."""
+    attributes: list[dict[str, Any]] = []
+    for segment in segments:
+        segment_id: str | int = segment.id
+        if isinstance(segment_id, str) and segment_id.isdigit():
+            segment_id = int(segment_id)
+        attributes.append({"id": segment_id, "name": segment.name})
+    return attributes
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -94,6 +117,7 @@ class EufyCleanVacuum(
         super().__init__(coordinator)
         self._device = device
         self._attr_unique_id = device.device_id
+        self._device_update_callback = self._handle_device_update
 
         if device.is_novel_api and HAS_CLEAN_AREA:
             self._attr_supported_features = (
@@ -109,6 +133,33 @@ class EufyCleanVacuum(
             model=model_name,
             sw_version=device.device_model,
         )
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to live map/room updates from the device."""
+        await super().async_added_to_hass()
+        self._device.add_update_callback(self._device_update_callback)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Unsubscribe from device updates."""
+        await super().async_will_remove_from_hass()
+        self._device.remove_update_callback(self._device_update_callback)
+
+    @callback
+    def _handle_device_update(self) -> None:
+        """Refresh vacuum state when map rooms or image change."""
+        self.async_write_ha_state()
+
+    def _get_rooms(self) -> list[dict[str, Any]]:
+        """Return the latest room list from coordinator or device."""
+        if self.coordinator.data and self._device.device_id in self.coordinator.data:
+            rooms = self.coordinator.data[self._device.device_id].get("rooms")
+            if rooms:
+                return rooms
+        return self._device.get_rooms()
+
+    def _get_segments(self) -> list[Segment]:
+        """Return segments derived from discovered rooms."""
+        return _rooms_to_segments(self._get_rooms())
 
     @property
     def activity(self) -> VacuumActivity | None:
@@ -151,12 +202,13 @@ class EufyCleanVacuum(
                 "is_docked": self._device.is_docked(),
             }
 
-        # Add rooms if available
-        rooms = self._device.get_rooms()
+        rooms = self._get_rooms()
+        segments = self._get_segments()
         if rooms:
             attrs["rooms"] = rooms
+        if segments:
+            attrs["segments"] = _segments_to_attributes(segments)
 
-        # Add info about room cleaning service
         if self._device.is_novel_api:
             attrs["supports_room_cleaning"] = True
             attrs["room_cleaning_service"] = "eufy_clean.clean_rooms"
@@ -194,15 +246,7 @@ class EufyCleanVacuum(
 
     async def async_get_segments(self) -> list[Segment]:
         """Get the segments (rooms) that can be cleaned."""
-        rooms = self._device.get_rooms()
-        return [
-            Segment(
-                id=str(room.get("id", room.get("room_id", ""))),
-                name=room.get("name", room.get("room_name", f"Room {room.get('id', '')}")),
-            )
-            for room in rooms
-            if room.get("id") or room.get("room_id")
-        ]
+        return self._get_segments()
 
     async def async_clean_segments(
         self, segment_ids: list[str], **kwargs: Any

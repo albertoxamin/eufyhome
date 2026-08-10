@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
@@ -56,6 +57,7 @@ async def async_setup_entry(
                 entities.append(EufyCleanTypeSelect(coordinator, device))
                 entities.append(EufyMopLevelSelect(coordinator, device))
             entities.append(EufyCleanExtentSelect(coordinator, device))
+            entities.append(EufyRoomSelect(coordinator, device))
 
     async_add_entities(entities)
 
@@ -223,4 +225,97 @@ class EufyCleanExtentSelect(
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
+
+
+class EufyRoomSelect(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], SelectEntity
+):
+    """Select a room segment to clean."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Clean Room"
+    _attr_icon = "mdi:floor-plan"
+    _attr_translation_key = "clean_room"
+
+    def __init__(
+        self,
+        coordinator: EufyCleanDataUpdateCoordinator,
+        device: BaseDevice,
+    ) -> None:
+        """Initialize the room select entity."""
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_clean_room"
+        self._room_options: dict[str, int] = {}
+        self._device_update_callback = self._handle_device_update
+
+        model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
+
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.device_id)},
+            name=device.device_name or f"Eufy {model_name}",
+            manufacturer=MANUFACTURER,
+            model=model_name,
+            sw_version=device.device_model,
+        )
+        self._refresh_room_options()
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to live map/room updates from the device."""
+        await super().async_added_to_hass()
+        self._device.add_update_callback(self._device_update_callback)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Unsubscribe from device updates."""
+        await super().async_will_remove_from_hass()
+        self._device.remove_update_callback(self._device_update_callback)
+
+    @callback
+    def _handle_device_update(self) -> None:
+        """Refresh options when room names arrive from the map stream."""
+        if self._refresh_room_options():
+            self.async_write_ha_state()
+
+    def _get_rooms(self) -> list[dict[str, Any]]:
+        if self.coordinator.data and self._device.device_id in self.coordinator.data:
+            rooms = self.coordinator.data[self._device.device_id].get("rooms")
+            if rooms:
+                return rooms
+        return self._device.get_rooms()
+
+    def _refresh_room_options(self) -> bool:
+        rooms = self._get_rooms()
+        options: dict[str, int] = {}
+        for room in rooms:
+            room_id = room.get("id")
+            if room_id is None:
+                continue
+            name = room.get("name") or f"Room {room_id}"
+            options[f"{name} ({room_id})"] = int(room_id)
+        changed = options != self._room_options
+        self._room_options = options
+        self._attr_options = list(options.keys()) or ["No rooms discovered"]
+        return changed
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the current option."""
+        if not self._room_options:
+            return "No rooms discovered"
+        return self._attr_options[0]
+
+    async def async_select_option(self, option: str) -> None:
+        """Start cleaning the selected room segment."""
+        room_id = self._room_options.get(option)
+        if room_id is None:
+            _LOGGER.warning("Unknown room option selected: %s", option)
+            return
+        await self._device.clean_rooms([room_id])
+        await self.coordinator.async_request_refresh()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._refresh_room_options()
         self.async_write_ha_state()

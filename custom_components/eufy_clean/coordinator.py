@@ -67,6 +67,7 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "cleaning_statistics": device.get_cleaning_statistics(),
                     "consumables": device.get_consumables(),
                     "station_status": device.get_station_status(),
+                    "rooms": device.get_rooms(),
                 }
                 for device_id, device in self.devices.items()
             }
