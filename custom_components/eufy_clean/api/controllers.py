@@ -50,6 +50,7 @@ from .proto_utils import (
     encode_station_auto_cfg,
     encode_station_manual_cmd,
     is_base64_encoded,
+    parse_rooms_from_map_dps,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -131,6 +132,14 @@ class BaseDevice:
             # Store unmapped DPS keys by raw key so map/camera can use them
             if not matched and key not in mapped_values:
                 self._robovac_data[key] = value
+
+        map_dps_key = self._dps_map.get("MAP_DATA")
+        if map_dps_key and map_dps_key in dps:
+            rooms = parse_rooms_from_map_dps(dps[map_dps_key])
+            if rooms:
+                self._robovac_data["ROOMS"] = rooms
+                _LOGGER.debug("Parsed %d rooms from MAP_DATA DPS", len(rooms))
+
         _LOGGER.debug("Mapped data: %s", self._robovac_data)
         self._notify_update()
 
@@ -493,6 +502,10 @@ class BaseDevice:
             "ban_mop_zones": 0,
         }
 
+    def has_cleaning_path(self) -> bool:
+        """Return True when cleaning path data is available on the map."""
+        return False
+
     def get_station_status(self) -> dict[str, Any]:
         """Get decoded station status from DPS 173."""
         defaults = {
@@ -624,6 +637,20 @@ class MqttDevice(BaseDevice):
         self._cert_path: str | None = None
         self._key_path: str | None = None
         self._map_requested = False
+        self._empty_room_polls = 0
+
+    def map_data(self, dps: dict[str, Any]) -> None:
+        """Map DPS data and merge any room list into the live map handler."""
+        super().map_data(dps)
+        rooms = self._robovac_data.get("ROOMS", [])
+        if rooms:
+            names = {
+                int(room["id"]): room["name"]
+                for room in rooms
+                if isinstance(room, dict) and room.get("id")
+            }
+            if names and self._map_handler._merge_room_params(names):
+                self._notify_update()
 
     def get_map_image(self) -> bytes | None:
         """Return rendered map PNG from the MQTT biz/ stream."""
@@ -634,10 +661,12 @@ class MqttDevice(BaseDevice):
         return self._map_handler.map_data is not None
 
     def get_room_names(self) -> dict[int, str]:
-        """Return room names from the map stream, if available."""
-        if self._map_handler.map_data and self._map_handler.map_data.room_names:
-            return dict(self._map_handler.map_data.room_names)
-        return dict(self._map_handler._pending_room_names)
+        """Return room names from the map stream and MAP_DATA DPS."""
+        names = self._map_handler.get_room_names()
+        for room in self._robovac_data.get("ROOMS", []):
+            if isinstance(room, dict) and room.get("id"):
+                names[int(room["id"])] = room.get("name", f"Room {room['id']}")
+        return names
 
     def has_room_colors(self) -> bool:
         """Return True when a room color mask has been received."""
@@ -649,6 +678,10 @@ class MqttDevice(BaseDevice):
     def has_restricted_zones(self) -> bool:
         """Return True when restricted-zone geometry has been received."""
         return self._map_handler.has_restricted_zones()
+
+    def has_cleaning_path(self) -> bool:
+        """Return True when streamed or embedded cleaning path data exists."""
+        return self._map_handler.has_cleaning_path()
 
     def get_restricted_zone_counts(self) -> dict[str, int]:
         """Return counts of virtual walls and zone polygons."""
@@ -779,6 +812,13 @@ class MqttDevice(BaseDevice):
 
     async def update(self) -> None:
         """Update device data via HTTP API."""
+        if not self.get_rooms():
+            self._empty_room_polls += 1
+            if self._empty_room_polls % 4 == 0:
+                await self.request_map_download()
+        else:
+            self._empty_room_polls = 0
+
         headers = {
             "user-agent": "EufyHome-Android-3.1.3-753",
             "timezone": "Europe/Berlin",

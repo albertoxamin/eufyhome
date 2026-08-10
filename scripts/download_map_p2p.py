@@ -288,6 +288,38 @@ async def main() -> None:
         for mid, name in sorted(map_handler.last_seen_maps.items()):
             print(f"  {mid}: {name}")
 
+    room_names = map_handler.get_room_names()
+    if room_names:
+        print(f"Rooms ({len(room_names)}):")
+        for rid, name in sorted(room_names.items()):
+            print(f"  {rid}: {name}")
+    else:
+        md = map_handler.map_data
+        print("Rooms: none")
+        if md:
+            print(
+                f"  map has room_pixels={bool(md.room_pixels)}, "
+                f"room_names={bool(md.room_names)}"
+            )
+
+    md = map_handler.map_data
+    if md:
+        raw = md.raw_pixels
+        pv0 = pv3 = 0
+        for i in range(md.width * md.height):
+            bp = i >> 2
+            bit = (i & 3) * 2
+            pv = (raw[bp] >> bit) & 3 if bp < len(raw) else 0
+            if pv == 0:
+                pv0 += 1
+            elif pv == 3:
+                pv3 += 1
+        print(
+            f"Path data: embedded pv0={pv0} pv3={pv3}, "
+            f"streamed_path_pts={len(map_handler._cleaning_path)}, "
+            f"robot_trail={len(map_handler._robot_trail)}"
+        )
+
     client.loop_stop()
     try:
         client.disconnect()

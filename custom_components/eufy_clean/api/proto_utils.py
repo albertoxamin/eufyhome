@@ -1027,3 +1027,101 @@ def encode_station_auto_cfg(
     # Add length prefix
     result = encode_varint(len(message)) + message
     return base64.b64encode(result).decode()
+
+
+_ROOM_SCENE_NAMES: dict[int, str] = {
+    1: "Study",
+    2: "Bedroom",
+    3: "Restroom",
+    4: "Kitchen",
+    5: "Living Room",
+    6: "Dining Room",
+    7: "Corridor",
+}
+
+
+def _coerce_proto_bytes(value: Any) -> bytes | None:
+    """Normalize a DPS value to raw protobuf bytes."""
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if isinstance(value, str):
+        if not value:
+            return None
+        try:
+            if is_base64_encoded(value):
+                return base64.b64decode(value)
+        except Exception:
+            pass
+        try:
+            return base64.b64decode(value)
+        except Exception:
+            return value.encode("utf-8")
+    return None
+
+
+def _proto_parse_candidates(data: bytes) -> list[bytes]:
+    """Return raw and length-stripped protobuf payloads."""
+    if not data:
+        return []
+    candidates = [data]
+    length, pos = decode_varint(data, 0)
+    if 0 < length <= len(data) - pos:
+        stripped = data[pos : pos + length]
+        if stripped and stripped not in candidates:
+            candidates.append(stripped)
+    if len(data) > 1 and data[0] == len(data) - 1:
+        single = data[1:]
+        if single not in candidates:
+            candidates.append(single)
+    return candidates
+
+
+def _room_name_from_scene(room: Any) -> str:
+    name = (getattr(room, "name", "") or "").strip()
+    if name:
+        return name
+    scene = getattr(room, "scene", None)
+    if scene is not None and getattr(scene, "type", 0):
+        return _ROOM_SCENE_NAMES.get(scene.type, f"Room {room.id}")
+    return f"Room {room.id}"
+
+
+def parse_rooms_from_map_dps(value: Any) -> list[dict[str, Any]]:
+    """Parse room segments from MAP_DATA DPS (RoomParams or UniversalDataResponse)."""
+    from ..proto.cloud import stream_pb2, universal_data_pb2
+
+    data = _coerce_proto_bytes(value)
+    if not data:
+        return []
+
+    for candidate in _proto_parse_candidates(data):
+        try:
+            universal = universal_data_pb2.UniversalDataResponse()
+            universal.ParseFromString(candidate)
+            if universal.cur_map_room.data:
+                return [
+                    {
+                        "id": room.id,
+                        "name": (room.name or "").strip() or f"Room {room.id}",
+                    }
+                    for room in universal.cur_map_room.data
+                    if room.id
+                ]
+        except Exception:
+            pass
+
+        try:
+            room_params = stream_pb2.RoomParams()
+            room_params.ParseFromString(candidate)
+            if room_params.rooms:
+                return [
+                    {"id": room.id, "name": _room_name_from_scene(room)}
+                    for room in room_params.rooms
+                    if room.id
+                ]
+        except Exception:
+            pass
+
+    return []

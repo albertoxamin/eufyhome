@@ -191,6 +191,7 @@ class EufyCleanMapCamera(Camera):
         self._attr_is_recording = False
         self._map_image: bytes | None = None
         self._last_map_data: dict[str, Any] | None = None
+        self._device_update_callback = self._handle_device_update
 
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
 
@@ -206,11 +207,18 @@ class EufyCleanMapCamera(Camera):
         """When entity is added to hass."""
         await super().async_added_to_hass()
         self._coordinator.async_add_listener(self._handle_coordinator_update)
+        self._device.add_update_callback(self._device_update_callback)
 
     async def async_will_remove_from_hass(self) -> None:
         """When entity is removed from hass."""
         await super().async_will_remove_from_hass()
         self._coordinator.async_remove_listener(self._handle_coordinator_update)
+        self._device.remove_update_callback(self._device_update_callback)
+
+    @callback
+    def _handle_device_update(self) -> None:
+        """Refresh map image when the MQTT stream updates."""
+        self.async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -373,4 +381,5 @@ class EufyCleanMapCamera(Camera):
                 {"id": room_id, "name": name}
                 for room_id, name in sorted(room_names.items())
             ],
+            "has_cleaning_path": self._device.has_cleaning_path(),
         }

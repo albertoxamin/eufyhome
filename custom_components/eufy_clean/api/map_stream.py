@@ -26,11 +26,74 @@ _PIXEL_COLORS: dict[int, tuple[int, int, int]] = {
 _BG_OUTSIDE: tuple[int, int, int] = (45, 45, 45)
 
 # Darker trace for cleaned / visited pixels inside a room.
-_PATH_INSIDE_ROOM: tuple[int, int, int] = (95, 95, 95)
+_PATH_INSIDE_ROOM: tuple[int, int, int] = (210, 110, 35)
+
+# Orange overlay for streamed trajectory and visited-pixel highlights.
+_PATH_OVERLAY: tuple[int, int, int] = (255, 140, 0)
 
 # Special room-mask ids from p2pdata.proto MapPixels encoding.
 _ROOM_MASK_GAP = 61
 _ROOM_MASK_OBSTACLE = 62
+
+
+def _map_pixel_value(raw: bytes, width: int, x: int, y: int) -> int:
+    """Return the 2bpp map pixel value at (x, y)."""
+    idx = y * width + x
+    byte_pos = idx >> 2
+    bit_pos = (idx & 3) * 2
+    if byte_pos >= len(raw):
+        return 0
+    return (raw[byte_pos] >> bit_pos) & 3
+
+
+def _visited_path_pixels(
+    map_data: MapData,
+) -> list[tuple[int, int]]:
+    """Return map pixels that look like a cleaning trace (pv=0 on explored floor)."""
+    raw = map_data.raw_pixels
+    width, height = map_data.width, map_data.height
+    room_px = map_data.room_pixels
+    res = map_data.resolution or 5
+    points: list[tuple[int, int]] = []
+
+    def _room_id(px_x: int, py: int) -> int:
+        if (
+            room_px is None
+            or not map_data.room_outline_width
+            or not map_data.room_outline_height
+        ):
+            return 0
+        ro_w = map_data.room_outline_width
+        ro_h = map_data.room_outline_height
+        ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
+        ro_dy = round((map_data.origin_y - map_data.room_outline_origin_y) / res)
+        rx, ry = px_x - ro_dx, py - ro_dy
+        if 0 <= rx < ro_w and 0 <= ry < ro_h:
+            return room_px[ry * ro_w + rx] >> 2
+        return 0
+
+    for py in range(height):
+        for px_x in range(width):
+            pv = _map_pixel_value(raw, width, px_x, py)
+            if pv not in (0, 3):
+                continue
+            rid = _room_id(px_x, py)
+            touches_floor = False
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = px_x + dx, py + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    neighbor = _map_pixel_value(raw, width, nx, ny)
+                    if neighbor in (2, 3):
+                        touches_floor = True
+                        break
+            if not touches_floor:
+                continue
+            if room_px is not None:
+                if _is_valid_room_id(rid) or rid == _ROOM_MASK_GAP:
+                    points.append((px_x, py))
+            elif pv == 0:
+                points.append((px_x, py))
+    return points
 
 
 def _is_valid_room_id(rid: int) -> bool:
@@ -239,6 +302,22 @@ def _hex_to_proto_bytes(hex_data: str) -> bytes:
     raw = bytes.fromhex(hex_data)
     _, pos = decode_varint(raw, 0)
     return raw[pos:]
+
+
+def _hex_proto_candidates(hex_data: str) -> list[bytes]:
+    """Return possible protobuf payloads from a biz/ hex frame."""
+    raw = bytes.fromhex(hex_data)
+    candidates = [raw]
+    stripped = _hex_to_proto_bytes(hex_data)
+    if stripped and stripped not in candidates:
+        candidates.append(stripped)
+    return candidates
+
+
+def _room_ids_from_pixels(pixels: bytes) -> list[int]:
+    """Return sorted room ids present in a room-outline mask."""
+    ids = {byte >> 2 for byte in pixels}
+    return sorted(rid for rid in ids if 1 <= rid <= 31)
 
 
 def _lz4_block_decompress(data: bytes, uncompressed_size: int) -> bytes:
@@ -467,7 +546,6 @@ def render_map_png(
     # ------------------------------------------------------------------
     # Step 5 — cleaning trail / streamed path
     # ------------------------------------------------------------------
-    _TRAIL = (255, 140, 0)
     _MAX_TRAIL_JUMP_SQ = 400 * 400
 
     def _draw_path_segments(
@@ -483,10 +561,10 @@ def render_map_png(
             ddx = raw_pts[i + 1][0] - raw_pts[i][0]
             ddy = raw_pts[i + 1][1] - raw_pts[i][1]
             if ddx * ddx + ddy * ddy <= _MAX_TRAIL_JUMP_SQ:
-                draw.line([out_pts[i], out_pts[i + 1]], fill=_TRAIL)
+                draw.line([out_pts[i], out_pts[i + 1]], fill=_PATH_OVERLAY)
         ox, oy = out_pts[-1]
         if 0 <= ox < out_w and 0 <= oy < out_h:
-            draw.point((ox, oy), fill=_TRAIL)
+            draw.point((ox, oy), fill=_PATH_OVERLAY)
 
     if cleaning_path:
         path_pixels: list[tuple[int, int]] = []
@@ -501,6 +579,12 @@ def render_map_png(
 
     if robot_trail:
         _draw_path_segments(list(robot_trail))
+
+    if map_data.raw_pixels and not robot_trail:
+        for px_x, py in _visited_path_pixels(map_data):
+            ox, oy = _to_out(px_x, py)
+            if 0 <= ox < out_w and 0 <= oy < out_h:
+                draw.point((ox, oy), fill=_PATH_OVERLAY)
 
     # ------------------------------------------------------------------
     # Step 6 — room name labels (after trail so labels render on top)
@@ -676,15 +760,26 @@ def try_extract_room_outline(
 
 def try_extract_room_params(hex_data: str) -> dict[int, str] | None:
     """Extract room id → name mapping from a biz/ RoomParams frame."""
-    try:
-        proto_bytes = _hex_to_proto_bytes(hex_data)
-        rp = stream_pb2.RoomParams().FromString(proto_bytes)
-        if not rp.rooms:
-            return None
-        names = _room_names_from_params(rp)
-        return names or None
-    except Exception:
-        pass
+    from ..proto.cloud import stream_wrap_pb2
+
+    for proto_bytes in _hex_proto_candidates(hex_data):
+        try:
+            rp = stream_pb2.RoomParams().FromString(proto_bytes)
+            if rp.rooms:
+                names = _room_names_from_params(rp)
+                if names:
+                    return names
+        except Exception:
+            pass
+        try:
+            wrap = stream_wrap_pb2.RoomParamsWrap().FromString(proto_bytes)
+            names: dict[int, str] = {}
+            for rp in wrap.room_params:
+                names.update(_room_names_from_params(rp))
+            if names:
+                return names
+        except Exception:
+            pass
     return None
 
 
@@ -752,9 +847,9 @@ def _append_path_point(
     point_type = flags & 0xF
     if point_type == 15:  # HIDE
         return
-    if not ((flags >> 5) & 1):  # show_trajectory_flag
-        return
     x, y = _decode_path_xy(xy)
+    if x == 0 and y == 0:
+        return
     break_before = bool((flags >> 4) & 1)
     points.append((x, y, break_before))
 
@@ -782,18 +877,14 @@ def _collect_path_points(data: bytes, out: list[tuple[int, int, bool]]) -> None:
 
 def try_extract_path_points(hex_data: str) -> list[tuple[int, int, bool]] | None:
     """Decode a biz/ path frame. Returns [(x_cm, y_cm, break_before), ...]."""
-    try:
-        proto_bytes = _hex_to_proto_bytes(hex_data)
-    except Exception:
-        return None
-
     points: list[tuple[int, int, bool]] = []
-    try:
-        pp = stream_pb2.PathPoint().FromString(proto_bytes)
-        _append_path_point(points, pp.xy, pp.flags)
-    except Exception:
-        pass
-    _collect_path_points(proto_bytes, points)
+    for proto_bytes in _hex_proto_candidates(hex_data):
+        try:
+            pp = stream_pb2.PathPoint().FromString(proto_bytes)
+            _append_path_point(points, pp.xy, pp.flags)
+        except Exception:
+            pass
+        _collect_path_points(proto_bytes, points)
     return points or None
 
 
@@ -892,7 +983,7 @@ class MapStreamHandler:
         outline = (pixels, width, height, origin_x, origin_y)
         self._pending_room_outline = outline
         if self.map_data is None:
-            return False
+            return True
         self.map_data.room_pixels = pixels
         self.map_data.room_outline_width = width
         self.map_data.room_outline_height = height
@@ -900,6 +991,23 @@ class MapStreamHandler:
         self.map_data.room_outline_origin_y = origin_y
         self._render()
         return True
+
+    def get_room_names(self) -> dict[int, str]:
+        """Return merged room names, falling back to ids from the outline mask."""
+        names: dict[int, str] = dict(self._pending_room_names)
+        if self.map_data and self.map_data.room_names:
+            names.update(self.map_data.room_names)
+
+        pixels: bytes | None = None
+        if self.map_data and self.map_data.room_pixels:
+            pixels = self.map_data.room_pixels
+        elif self._pending_room_outline:
+            pixels = self._pending_room_outline[0]
+
+        if pixels:
+            for rid in _room_ids_from_pixels(pixels):
+                names.setdefault(rid, f"Room {rid}")
+        return names
 
     def _merge_restricted_zone(self, layers: RestrictedZoneLayers) -> bool:
         self._pending_restricted_zones = layers
@@ -934,7 +1042,7 @@ class MapStreamHandler:
         if zones := try_extract_restricted_zone(hex_data):
             return self._merge_restricted_zone(zones)
 
-        if len(hex_data) < 200:
+        if len(hex_data) < 800:
             if path_pts := try_extract_path_points(hex_data):
                 self._cleaning_path.extend(path_pts)
                 if self.map_data is not None:
@@ -1010,6 +1118,14 @@ class MapStreamHandler:
             self._pending_restricted_zones is not None
             and not self._pending_restricted_zones.is_empty()
         )
+
+    def has_cleaning_path(self) -> bool:
+        """Return True when streamed or embedded cleaning path data exists."""
+        if self._cleaning_path or self._robot_trail:
+            return True
+        if self.map_data and self.map_data.raw_pixels:
+            return bool(_visited_path_pixels(self.map_data))
+        return False
 
     def restricted_zone_counts(self) -> dict[str, int]:
         """Return counts of virtual walls and zone polygons."""
