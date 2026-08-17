@@ -144,10 +144,9 @@ class EufyCleanVacuum(
         await super().async_will_remove_from_hass()
         self._device.remove_update_callback(self._device_update_callback)
 
-    @callback
     def _handle_device_update(self) -> None:
         """Refresh vacuum state when map rooms or image change."""
-        self.async_write_ha_state()
+        self.schedule_update_ha_state(force_refresh=True)
 
     def _get_rooms(self) -> list[dict[str, Any]]:
         """Return the latest room list from coordinator or device."""
