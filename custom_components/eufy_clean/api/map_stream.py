@@ -31,6 +31,8 @@ _PATH_INSIDE_ROOM: tuple[int, int, int] = (210, 110, 35)
 # Orange overlay for streamed trajectory and visited-pixel highlights.
 _PATH_OVERLAY: tuple[int, int, int] = (255, 140, 0)
 
+_MAX_TRAIL_POINTS = 8000
+
 # Special room-mask ids from p2pdata.proto MapPixels encoding.
 _ROOM_MASK_GAP = 61
 _ROOM_MASK_OBSTACLE = 62
@@ -552,9 +554,14 @@ def render_map_png(
         raw_pts: list[tuple[int, int]],
         breaks: list[bool] | None = None,
     ) -> None:
-        if len(raw_pts) < 2:
+        if not raw_pts:
             return
         out_pts = [_to_out(tx, ty) for tx, ty in raw_pts]
+        if len(raw_pts) == 1:
+            ox, oy = out_pts[0]
+            if 0 <= ox < out_w and 0 <= oy < out_h:
+                _circle(ox, oy, 2.0, _PATH_OVERLAY)
+            return
         for i in range(len(raw_pts) - 1):
             if breaks and i + 1 < len(breaks) and breaks[i + 1]:
                 continue
@@ -580,7 +587,7 @@ def render_map_png(
     if robot_trail:
         _draw_path_segments(list(robot_trail))
 
-    if map_data.raw_pixels and not robot_trail:
+    if map_data.raw_pixels:
         for px_x, py in _visited_path_pixels(map_data):
             ox, oy = _to_out(px_x, py)
             if 0 <= ox < out_w and 0 <= oy < out_h:
@@ -621,8 +628,8 @@ def render_map_png(
             _circle(orx, ory, 5.0, (20, 20, 20))
             _circle(orx, ory, 4.0, (55, 55, 55))
         else:  # "googly" (default)
-            _circle(orx, ory, 5.0, (160, 70, 0))
-            _circle(orx, ory, 4.0, (255, 140, 0))
+            _circle(orx, ory, 7.0, (160, 70, 0))
+            _circle(orx, ory, 6.0, (255, 140, 0))
             for ex, ey in ((-1, -1), (2, -1)):
                 _circle(orx + ex, ory + ey, 1.5, (255, 255, 255))
                 _circle(orx + ex, ory + ey, 0.6, (20, 20, 20))
@@ -890,14 +897,38 @@ def try_extract_path_points(hex_data: str) -> list[tuple[int, int, bool]] | None
 
 def try_decode_as_dynamic_data(hex_data: str) -> tuple[int, int, int] | None:
     """Decode channel as DynamicData robot pose. Returns (x_cm, y_cm, theta_crad) or None."""
-    try:
-        proto_bytes = _hex_to_proto_bytes(hex_data)
-        dyn = stream_pb2.DynamicData().FromString(proto_bytes)
-        pose = dyn.cur_pose
-        if pose.x != 0 or pose.y != 0:
-            return pose.x, pose.y, pose.theta
-    except Exception:
-        pass
+    for proto_bytes in _hex_proto_candidates(hex_data):
+        try:
+            dyn = stream_pb2.DynamicData().FromString(proto_bytes)
+            pose = dyn.cur_pose
+            if pose.x != 0 or pose.y != 0:
+                return pose.x, pose.y, pose.theta
+        except Exception:
+            pass
+    return None
+
+
+def try_extract_metadata_channels(hex_data: str) -> dict[str, int] | None:
+    """Extract biz/ stream channel ids from a Metadata frame."""
+    for proto_bytes in _hex_proto_candidates(hex_data):
+        try:
+            metadata = stream_pb2.Metadata().FromString(proto_bytes)
+            chan_ids = metadata.chan_ids
+            channels = {
+                name: getattr(chan_ids, name)
+                for name in (
+                    "path",
+                    "dynamic_data",
+                    "map_data",
+                    "room_outline",
+                    "room_params",
+                )
+                if getattr(chan_ids, name, 0)
+            }
+            if channels:
+                return channels
+        except Exception:
+            pass
     return None
 
 
@@ -929,9 +960,11 @@ def _pose_to_pixel(
     res = map_data.resolution or 5
     px = round((x_cm - map_data.origin_x) / res)
     py = round((y_cm - map_data.origin_y) / res)
-    if 0 <= px < map_data.width and 0 <= py < map_data.height:
-        return px, py
-    return None
+    if map_data.width <= 0 or map_data.height <= 0:
+        return None
+    px = max(0, min(map_data.width - 1, px))
+    py = max(0, min(map_data.height - 1, py))
+    return px, py
 
 
 class MapStreamHandler:
@@ -946,11 +979,59 @@ class MapStreamHandler:
         self._robot_trail: list[tuple[int, int]] = []
         self._cleaning_path: list[tuple[int, int, bool]] = []
         self._dock_pixel: tuple[int, int] | None = None
-        self._tracking_cleaning = False
+        self._tracking_active = False
         self._rotation = rotation
+        self._path_channel_id: int | None = None
+        self._dynamic_channel_id: int | None = None
         self._pending_room_names: dict[int, str] = {}
         self._pending_room_outline: tuple[bytes, int, int, int, int] | None = None
         self._pending_restricted_zones: RestrictedZoneLayers | None = None
+
+    def _append_trail_point(self, robot_px: tuple[int, int]) -> None:
+        """Append a robot pose to the live trail, filtering teleports."""
+        if not self._robot_trail:
+            self._robot_trail.append(robot_px)
+            return
+        last = self._robot_trail[-1]
+        dx = robot_px[0] - last[0]
+        dy = robot_px[1] - last[1]
+        if self.map_data is None:
+            self._robot_trail.append(robot_px)
+        else:
+            max_step = max(self.map_data.width, self.map_data.height) // 8
+            dist_sq = dx * dx + dy * dy
+            if 1 <= dist_sq <= max_step * max_step:
+                self._robot_trail.append(robot_px)
+        if len(self._robot_trail) > _MAX_TRAIL_POINTS:
+            self._robot_trail = self._robot_trail[-_MAX_TRAIL_POINTS :]
+
+    def _ingest_pose(self, x_cm: int, y_cm: int) -> bool:
+        """Update robot pixel/trail from a world pose. Returns True when map image changed."""
+        if self.map_data is None:
+            return False
+        robot_px = _pose_to_pixel(self.map_data, x_cm, y_cm)
+        if robot_px is None:
+            return False
+        if self._tracking_active:
+            self._append_trail_point(robot_px)
+        self._robot_pixel = robot_px
+        self._render()
+        return True
+
+    def _ingest_path_points(self, path_pts: list[tuple[int, int, bool]]) -> bool:
+        """Merge streamed path points and re-render when possible."""
+        if not path_pts:
+            return False
+        self._cleaning_path.extend(path_pts)
+        if len(self._cleaning_path) > _MAX_TRAIL_POINTS:
+            self._cleaning_path = self._cleaning_path[-_MAX_TRAIL_POINTS :]
+        if self.map_data is None:
+            return False
+        self._render()
+        return True
+
+    def _frame_matches_channel(self, channel_id: int, known_id: int | None) -> bool:
+        return known_id is None or channel_id == known_id
 
     def set_rotation(self, rotation: int) -> None:
         """Set clockwise rotation applied when rendering (0, 90, 180, 270)."""
@@ -1032,6 +1113,15 @@ class MapStreamHandler:
                 self.last_seen_maps[map_id] = name
             return False
 
+        if channels := try_extract_metadata_channels(hex_data):
+            if path_id := channels.get("path"):
+                self._path_channel_id = path_id
+            if dynamic_id := channels.get("dynamic_data"):
+                self._dynamic_channel_id = dynamic_id
+            if map_id := channels.get("map_data"):
+                self.map_channel_id = self.map_channel_id or map_id
+            return False
+
         if names := try_extract_room_params(hex_data):
             return self._merge_room_params(names)
 
@@ -1042,29 +1132,19 @@ class MapStreamHandler:
         if zones := try_extract_restricted_zone(hex_data):
             return self._merge_restricted_zone(zones)
 
+        if self._frame_matches_channel(channel_id, self._path_channel_id):
+            if path_pts := try_extract_path_points(hex_data):
+                return self._ingest_path_points(path_pts)
+
+        if self._frame_matches_channel(channel_id, self._dynamic_channel_id):
+            if pose := try_decode_as_dynamic_data(hex_data):
+                return self._ingest_pose(pose[0], pose[1])
+
         if len(hex_data) < 800:
             if path_pts := try_extract_path_points(hex_data):
-                self._cleaning_path.extend(path_pts)
-                if self.map_data is not None:
-                    self._render()
-                    return True
-            pose = try_decode_as_dynamic_data(hex_data)
-            if pose is not None and self.map_data is not None:
-                robot_px = _pose_to_pixel(self.map_data, pose[0], pose[1])
-                if robot_px is not None:
-                    if self._tracking_cleaning:
-                        if not self._robot_trail:
-                            self._robot_trail.append(robot_px)
-                        else:
-                            dx = robot_px[0] - self._robot_trail[-1][0]
-                            dy = robot_px[1] - self._robot_trail[-1][1]
-                            max_step = max(self.map_data.width, self.map_data.height) // 10
-                            dist_sq = dx * dx + dy * dy
-                            if 3 <= dist_sq <= max_step * max_step:
-                                self._robot_trail.append(robot_px)
-                    self._robot_pixel = robot_px
-                    self._render()
-                    return True
+                return self._ingest_path_points(path_pts)
+            if pose := try_decode_as_dynamic_data(hex_data):
+                return self._ingest_pose(pose[0], pose[1])
             return False
 
         is_map_candidate = (
@@ -1073,10 +1153,14 @@ class MapStreamHandler:
             or len(hex_data) > 15000
         )
         if not is_map_candidate:
+            if pose := try_decode_as_dynamic_data(hex_data):
+                return self._ingest_pose(pose[0], pose[1])
             return False
 
         map_data = try_extract_map_data(hex_data)
         if map_data is None:
+            if pose := try_decode_as_dynamic_data(hex_data):
+                return self._ingest_pose(pose[0], pose[1])
             return False
 
         if self.map_channel_id != channel_id:
@@ -1100,15 +1184,19 @@ class MapStreamHandler:
         self._render()
         return True
 
+    def set_tracking_active(self, active: bool) -> None:
+        """Enable live trail accumulation while the robot is moving on the map."""
+        if active and not self._tracking_active:
+            # Keep historical path/pose from the current map download.
+            pass
+        elif not active and self._tracking_active:
+            # Robot stopped moving; keep the last rendered trail and pose.
+            pass
+        self._tracking_active = active
+
     def set_tracking_cleaning(self, active: bool) -> None:
-        """Enable trail accumulation while the robot is cleaning."""
-        if active and not self._tracking_cleaning:
-            self._robot_trail.clear()
-            self._cleaning_path.clear()
-            self._robot_pixel = None
-        elif not active and self._tracking_cleaning and self._robot_pixel is not None:
-            self._dock_pixel = self._robot_pixel
-        self._tracking_cleaning = active
+        """Backward-compatible alias for older callers."""
+        self.set_tracking_active(active)
 
     def has_restricted_zones(self) -> bool:
         """Return True when zone geometry is available on the map or pending."""
@@ -1126,6 +1214,11 @@ class MapStreamHandler:
         if self.map_data and self.map_data.raw_pixels:
             return bool(_visited_path_pixels(self.map_data))
         return False
+
+    @property
+    def robot_pixel(self) -> tuple[int, int] | None:
+        """Last known robot position in map pixel coordinates."""
+        return self._robot_pixel
 
     def restricted_zone_counts(self) -> dict[str, int]:
         """Return counts of virtual walls and zone polygons."""

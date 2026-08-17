@@ -382,4 +382,5 @@ class EufyCleanMapCamera(Camera):
                 for room_id, name in sorted(room_names.items())
             ],
             "has_cleaning_path": self._device.has_cleaning_path(),
+            "robot_on_map": self._device.get_robot_pixel() is not None,
         }

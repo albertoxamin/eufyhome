@@ -55,6 +55,10 @@ from .proto_utils import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Work statuses where the robot is moving on the map (cleaning, returning, etc.)
+_ACTIVE_MAP_STATUSES = frozenset(
+    {"cleaning", "go_home", "cruising", "remote_ctrl", "fast_mapping"}
+)
 
 class BaseDevice:
     """Base class for Eufy Clean devices."""
@@ -506,6 +510,10 @@ class BaseDevice:
         """Return True when cleaning path data is available on the map."""
         return False
 
+    def get_robot_pixel(self) -> tuple[int, int] | None:
+        """Return the last known robot pixel on the rendered map."""
+        return None
+
     def get_station_status(self) -> dict[str, Any]:
         """Get decoded station status from DPS 173."""
         defaults = {
@@ -683,6 +691,10 @@ class MqttDevice(BaseDevice):
         """Return True when streamed or embedded cleaning path data exists."""
         return self._map_handler.has_cleaning_path()
 
+    def get_robot_pixel(self) -> tuple[int, int] | None:
+        """Return the last known robot pixel on the rendered map."""
+        return self._map_handler.robot_pixel
+
     def get_restricted_zone_counts(self) -> dict[str, int]:
         """Return counts of virtual walls and zone polygons."""
         return self._map_handler.restricted_zone_counts()
@@ -786,7 +798,12 @@ class MqttDevice(BaseDevice):
         try:
             topic_biz = f"biz/eufy_home/{self._device_model}/{self._device_id}/res"
             if msg.topic == topic_biz:
-                if self._map_handler.handle_biz_payload(msg.payload):
+                updated = self._map_handler.handle_biz_payload(msg.payload)
+                work_status = self.get_work_status()
+                self._map_handler.set_tracking_active(
+                    work_status in _ACTIVE_MAP_STATUSES
+                )
+                if updated or self._map_handler.map_data is not None:
                     self._notify_update()
                 return
 
@@ -800,7 +817,9 @@ class MqttDevice(BaseDevice):
             if dps:
                 self.map_data(dps)
                 work_status = self.get_work_status()
-                self._map_handler.set_tracking_cleaning(work_status == "cleaning")
+                self._map_handler.set_tracking_active(
+                    work_status in _ACTIVE_MAP_STATUSES
+                )
                 _LOGGER.debug("Received MQTT data: %s", dps)
         except Exception as err:
             _LOGGER.error("Error processing MQTT message: %s", err)
@@ -812,7 +831,10 @@ class MqttDevice(BaseDevice):
 
     async def update(self) -> None:
         """Update device data via HTTP API."""
-        if not self.get_rooms():
+        work_status = self.get_work_status()
+        if work_status in _ACTIVE_MAP_STATUSES:
+            await self.request_map_download()
+        elif not self.get_rooms():
             self._empty_room_polls += 1
             if self._empty_room_polls % 4 == 0:
                 await self.request_map_download()
