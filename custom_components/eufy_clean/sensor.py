@@ -140,6 +140,13 @@ SENSOR_DESCRIPTIONS: tuple[EufyCleanSensorEntityDescription, ...] = (
 # Station-specific sensors (novel API only)
 STATION_SENSOR_DESCRIPTIONS: tuple[EufyCleanSensorEntityDescription, ...] = (
     EufyCleanSensorEntityDescription(
+        key="station_operation",
+        translation_key="station_operation",
+        name="Station Activity",
+        icon="mdi:washing-machine",
+        value_fn=lambda data: data.get("station_status", {}).get("operation_label"),
+    ),
+    EufyCleanSensorEntityDescription(
         key="dock_status",
         translation_key="dock_status",
         name="Dock Status",
@@ -161,9 +168,19 @@ def _derive_dock_status(station: dict[str, Any]) -> str | None:
     """Derive a human-readable dock status from station_status dict."""
     if not station.get("connected", False):
         return None
+    operation = station.get("operation_label")
+    if operation and station.get("is_busy"):
+        return operation
     if station.get("collecting_dust", False):
-        return "collecting dust"
-    return station.get("state", "idle")
+        return "Emptying dust bin"
+    state = station.get("state", "idle")
+    if state == "washing":
+        return "Washing mop"
+    if state == "drying":
+        return "Drying mop"
+    if state == "removing_scale":
+        return "Removing scale"
+    return "Idle"
 
 
 async def async_setup_entry(

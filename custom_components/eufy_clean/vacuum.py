@@ -212,6 +212,15 @@ class EufyCleanVacuum(
         if self._device.is_novel_api:
             attrs["supports_room_cleaning"] = True
             attrs["room_cleaning_service"] = "eufy_clean.clean_rooms"
+            station = (
+                self.coordinator.data[self._device.device_id].get("station_status", {})
+                if self.coordinator.data
+                and self._device.device_id in self.coordinator.data
+                else self._device.get_station_status()
+            )
+            attrs["station_operation"] = station.get("operation", "idle")
+            attrs["station_operation_label"] = station.get("operation_label", "Idle")
+            attrs["station_busy"] = station.get("is_busy", False)
 
         return attrs
 

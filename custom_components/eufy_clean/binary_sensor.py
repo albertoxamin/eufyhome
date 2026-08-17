@@ -33,6 +33,9 @@ async def async_setup_entry(
     for device_id, device in coordinator.devices.items():
         entities.append(EufyCleanChargingBinarySensor(coordinator, device))
         entities.append(EufyCleanDockedBinarySensor(coordinator, device))
+        if device.is_novel_api:
+            entities.append(EufyCleanStationWashingBinarySensor(coordinator, device))
+            entities.append(EufyCleanStationDryingBinarySensor(coordinator, device))
 
     async_add_entities(entities)
 
@@ -120,4 +123,94 @@ class EufyCleanDockedBinarySensor(
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
+
+
+def _station_status(
+    coordinator: EufyCleanDataUpdateCoordinator, device: BaseDevice
+) -> dict:
+    if coordinator.data and device.device_id in coordinator.data:
+        return coordinator.data[device.device_id].get("station_status", {})
+    return device.get_station_status()
+
+
+class EufyCleanStationWashingBinarySensor(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], BinarySensorEntity
+):
+    """Binary sensor for station mop washing."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Station Washing"
+    _attr_icon = "mdi:washing-machine"
+
+    def __init__(
+        self,
+        coordinator: EufyCleanDataUpdateCoordinator,
+        device: BaseDevice,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_station_washing"
+        model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.device_id)},
+            name=device.device_name or f"Eufy {model_name}",
+            manufacturer=MANUFACTURER,
+            model=model_name,
+            sw_version=device.device_model,
+        )
+
+    @property
+    def available(self) -> bool:
+        station = _station_status(self.coordinator, self._device)
+        return station.get("connected", False)
+
+    @property
+    def is_on(self) -> bool | None:
+        station = _station_status(self.coordinator, self._device)
+        return station.get("operation") == "washing"
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()
+
+
+class EufyCleanStationDryingBinarySensor(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], BinarySensorEntity
+):
+    """Binary sensor for station mop drying."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Station Drying"
+    _attr_icon = "mdi:hair-dryer"
+
+    def __init__(
+        self,
+        coordinator: EufyCleanDataUpdateCoordinator,
+        device: BaseDevice,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_station_drying"
+        model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.device_id)},
+            name=device.device_name or f"Eufy {model_name}",
+            manufacturer=MANUFACTURER,
+            model=model_name,
+            sw_version=device.device_model,
+        )
+
+    @property
+    def available(self) -> bool:
+        station = _station_status(self.coordinator, self._device)
+        return station.get("connected", False)
+
+    @property
+    def is_on(self) -> bool | None:
+        station = _station_status(self.coordinator, self._device)
+        return station.get("operation") == "drying"
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
         self.async_write_ha_state()

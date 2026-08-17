@@ -21,6 +21,21 @@ WORK_STATUS_STATE_MAP = {
     8: "cruising",
 }
 
+GO_WASH_MODE_MAP = {
+    0: "navigation_to_wash",
+    1: "washing",
+    2: "drying",
+}
+
+STATION_OPERATION_LABELS = {
+    "idle": "Idle",
+    "washing": "Washing mop",
+    "drying": "Drying mop",
+    "removing_scale": "Removing scale",
+    "collecting_dust": "Emptying dust bin",
+    "navigation_to_wash": "Going to wash",
+}
+
 # Work mode mapping (from proto enum)
 WORK_MODE_MAP = {
     0: "auto",
@@ -109,6 +124,8 @@ def decode_work_status(base64_value: str) -> dict[str, Any]:
             "charging": None,
             "cleaning": None,
             "go_home": None,
+            "go_wash": None,
+            "go_wash_mode": None,
         }
 
         pos = 0
@@ -137,6 +154,14 @@ def decode_work_status(base64_value: str) -> dict[str, Any]:
 
             elif field_num == 6 and wire_type == 2:  # Cleaning message
                 result["cleaning"] = True
+
+            elif field_num == 7 and wire_type == 2 and isinstance(value, bytes):
+                result["go_wash"] = True
+                wash_mode = _get_nested_varint(value, 2)
+                if wash_mode is not None:
+                    result["go_wash_mode"] = GO_WASH_MODE_MAP.get(
+                        wash_mode, f"mode_{wash_mode}"
+                    )
 
             elif field_num == 8 and wire_type == 2:  # GoHome message
                 result["go_home"] = True
@@ -785,6 +810,43 @@ MOP_LEVEL_HIGH = 2
 # Station status state mapping (StationResponse.StationStatus.State)
 STATION_STATE_MAP = {0: "idle", 1: "washing", 2: "drying", 3: "removing_scale"}
 
+ACTIVE_STATION_OPERATIONS = frozenset(
+    {
+        "washing",
+        "drying",
+        "removing_scale",
+        "collecting_dust",
+        "navigation_to_wash",
+    }
+)
+
+
+def derive_station_operation(
+    station_status: dict[str, Any],
+    work_status: dict[str, Any] | None = None,
+) -> str:
+    """Return the active base-station operation, if any."""
+    if station_status.get("collecting_dust"):
+        return "collecting_dust"
+
+    state = station_status.get("state", "idle")
+    if state in ACTIVE_STATION_OPERATIONS:
+        return state
+
+    if work_status:
+        go_wash_mode = work_status.get("go_wash_mode")
+        if go_wash_mode in ACTIVE_STATION_OPERATIONS:
+            return go_wash_mode
+        if work_status.get("go_wash"):
+            return "navigation_to_wash"
+
+    return "idle"
+
+
+def station_operation_label(operation: str) -> str:
+    """Return a human-readable label for a station operation."""
+    return STATION_OPERATION_LABELS.get(operation, operation.replace("_", " ").title())
+
 # Water level mapping
 WATER_LEVEL_MAP = {0: "empty", 1: "very_low", 2: "low", 3: "medium", 4: "high"}
 
@@ -904,6 +966,19 @@ def decode_station_status(base64_value: str) -> dict[str, Any]:
             "Error decoding station status: %s (value: %s)", err, base64_value
         )
         return defaults
+
+
+def enrich_station_status(
+    station_status: dict[str, Any],
+    work_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Attach derived station operation fields to decoded station status."""
+    enriched = dict(station_status)
+    operation = derive_station_operation(enriched, work_status)
+    enriched["operation"] = operation
+    enriched["operation_label"] = station_operation_label(operation)
+    enriched["is_busy"] = operation in ACTIVE_STATION_OPERATIONS
+    return enriched
 
 
 def _decode_auto_action_cfg(data: bytes) -> dict[str, Any]:

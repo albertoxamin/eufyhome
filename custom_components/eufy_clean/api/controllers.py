@@ -42,6 +42,8 @@ from .proto_utils import (
     decode_scene_list,
     decode_station_status,
     decode_work_status,
+    enrich_station_status,
+    decode_work_status,
     encode_clean_param,
     encode_control_command,
     encode_dnd,
@@ -173,16 +175,16 @@ class BaseDevice:
 
     def get_work_status(self) -> str:
         """Get current work status."""
+        return self.get_work_status_details().get("state", "charging")
+
+    def get_work_status_details(self) -> dict[str, Any]:
+        """Get decoded work status details from DPS."""
         status = self._robovac_data.get("WORK_STATUS", "")
-
         if self._novel_api and isinstance(status, str) and is_base64_encoded(status):
-            decoded = decode_work_status(status)
-            return decoded.get("state", "charging")
-
-        if isinstance(status, str):
-            return status.lower()
-
-        return "charging"
+            return decode_work_status(status)
+        if isinstance(status, str) and status:
+            return {"state": status.lower(), "mode": "unknown"}
+        return {"state": "charging", "mode": "unknown"}
 
     def get_work_mode(self) -> str:
         """Get current work mode."""
@@ -523,17 +525,25 @@ class BaseDevice:
             "clean_water_pct": 0,
             "auto_empty_enabled": False,
             "auto_wash_enabled": False,
+            "operation": "idle",
+            "operation_label": "Idle",
+            "is_busy": False,
         }
         if not self._novel_api:
             return defaults
         raw = self._robovac_data.get("STATION_STATUS", "")
         if not raw or not isinstance(raw, str):
             return defaults
-        return decode_station_status(raw)
+        station = decode_station_status(raw)
+        return enrich_station_status(station, self.get_work_status_details())
 
     def has_station(self) -> bool:
         """Return True if a station is connected."""
         return self.get_station_status().get("connected", False)
+
+    async def station_stop(self) -> None:
+        """Stop an active station operation (wash, dry, dust empty, etc.)."""
+        await self.stop()
 
     async def station_dry_mop(self) -> None:
         """Send manual dry mop command to station."""

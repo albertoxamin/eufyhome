@@ -52,6 +52,17 @@
       },
       "error_code": {
         "name": "Error"
+      },
+      "station_operation": {
+        "name": "Station Activity"
+      },
+      "dock_status": {
+        "name": "Dock Status"
+      }
+    },
+    "button": {
+      "stop_station": {
+        "name": "Stop Station"
       }
     },
     "select": {
