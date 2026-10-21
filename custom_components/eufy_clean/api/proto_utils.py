@@ -4,9 +4,41 @@ from __future__ import annotations
 
 import base64
 import logging
+from functools import lru_cache
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _enum_phrase(name: str) -> str:
+    """E7053_MACHINE_TILTED -> machine tilted."""
+    body = name.split("_", 1)[1] if "_" in name else name
+    return body.replace("_", " ").lower()
+
+
+@lru_cache(maxsize=1)
+def _fault_phrases() -> dict[int, str]:
+    """Numeric fault codes from the app's error-code protobuf enums."""
+    from ..proto.cloud import error_code_list_standard_pb2 as standard
+    from ..proto.cloud import error_code_list_t2080_pb2 as t2080
+    from ..proto.cloud import error_code_list_t2265_pb2 as t2265
+    from ..proto.cloud import error_code_list_t2320_pb2 as t2320
+
+    phrases: dict[int, str] = {}
+    for module in (t2080, t2265, t2320, standard):
+        for attr in dir(module):
+            desc = getattr(getattr(module, attr), "DESCRIPTOR", None)
+            if desc is None or desc.name not in ("ErrorCodeList", "PromptCodeList"):
+                continue
+            for number, value in desc.values_by_number.items():
+                if number:
+                    phrases[number] = _enum_phrase(value.name)
+    return phrases
+
+
+def explain_fault_code(code: int) -> str | None:
+    """Return the app's phrase for a numeric error or warning, if known."""
+    return _fault_phrases().get(int(code))
 
 # Work status state mapping (from proto enum)
 WORK_STATUS_STATE_MAP = {

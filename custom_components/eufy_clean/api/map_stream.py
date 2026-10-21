@@ -7,6 +7,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
@@ -27,20 +28,67 @@ _PIXEL_COLORS: dict[int, tuple[int, int, int]] = {
 # Orange overlay for live robot trail and visited-pixel highlights.
 _PATH_OVERLAY: tuple[int, int, int] = (255, 140, 0)
 
-# Look chosen in the map preview. The camera render uses this.
-_CAMERA_MAP_STYLE: dict[str, Any] = {
-    "path_color": (255, 255, 255),
-    "path_style": "segmented",
-    "path_width": 2,
-    "path_radius_scale": 1.9,
-    "render_scale": 2,
-    "label_color": (0x1E, 0x1E, 0x1E),
-    "label_bg": (255, 255, 255),
-    "label_size": 8,
-    "show_embedded_path": True,
-    "show_labels": True,
-    "show_zones": True,
-}
+def _rgb_option(
+    value: Any, default: tuple[int, int, int]
+) -> tuple[int, int, int]:
+    """Read a stored RGB color, which is a list of three bytes."""
+    if isinstance(value, (list, tuple)) and len(value) == 3:
+        return tuple(int(part) for part in value)  # type: ignore[return-value]
+    return default
+
+
+def render_settings_from_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Build renderer settings from config-entry options.
+
+    Missing keys use the preview defaults: white segmented path, width 2,
+    dot robot, and 2x rendering.
+    """
+    options = options or {}
+    room_defaults = (
+        (100, 150, 200),
+        (150, 200, 130),
+        (200, 160, 130),
+        (180, 140, 200),
+        (200, 190, 110),
+        (140, 190, 200),
+        (200, 130, 150),
+        (160, 200, 180),
+    )
+    palette: list[tuple[int, int, int]] = [(45, 45, 45)]
+    for index, default in enumerate(room_defaults, start=1):
+        palette.append(_rgb_option(options.get(f"r{index}"), default))
+    status = options.get("status") or None
+    if status == "none":
+        status = None
+    return {
+        "rotation": int(options.get("map_rotation", 0)),
+        "max_px": int(options.get("max_px", 512)),
+        "robot_style": options.get("robot") or "dot",
+        "robot_status": status,
+        "show_robot": bool(options.get("robot_on", True)),
+        "show_trail": bool(options.get("trail", True)),
+        "show_dock": bool(options.get("dock", True)),
+        "style": {
+            "pixel_colors": {
+                0: _rgb_option(options.get("c0"), (30, 30, 30)),
+                1: _rgb_option(options.get("c1"), (20, 20, 20)),
+                2: _rgb_option(options.get("c2"), (200, 200, 200)),
+                3: _rgb_option(options.get("c3"), (200, 200, 200)),
+            },
+            "room_palette": palette,
+            "path_color": _rgb_option(options.get("path"), (255, 255, 255)),
+            "path_style": options.get("path_style") or "segmented",
+            "path_width": int(options.get("path_width", 2)),
+            "path_radius_scale": float(options.get("radius", 1.9)),
+            "render_scale": int(options.get("dpi", 2)),
+            "label_color": _rgb_option(options.get("label"), (30, 30, 30)),
+            "label_bg": _rgb_option(options.get("label_bg"), (255, 255, 255)),
+            "label_size": int(options.get("label_size", 8)),
+            "show_embedded_path": bool(options.get("path_on", True)),
+            "show_labels": bool(options.get("labels", True)),
+            "show_zones": bool(options.get("zones", True)),
+        },
+    }
 
 _MAX_TRAIL_POINTS = 8000
 
@@ -1087,7 +1135,15 @@ class MapStreamHandler:
         self._cleaning_path: list[tuple[int, int, bool]] = []
         self._dock_pixel: tuple[int, int] | None = None
         self._tracking_active = False
-        self._rotation = rotation
+        self._rotation = int(rotation) % 360
+        defaults = render_settings_from_options(None)
+        self._robot_style = defaults["robot_style"]
+        self._robot_status = defaults["robot_status"]
+        self._show_robot = defaults["show_robot"]
+        self._show_trail = defaults["show_trail"]
+        self._show_dock = defaults["show_dock"]
+        self._max_px = defaults["max_px"]
+        self._style = defaults["style"]
         self._path_channel_id: int | None = None
         self._dynamic_channel_id: int | None = None
         self._pending_room_names: dict[int, str] = {}
@@ -1158,6 +1214,40 @@ class MapStreamHandler:
     def set_rotation(self, rotation: int) -> None:
         """Set clockwise rotation applied when rendering (0, 90, 180, 270)."""
         self._rotation = int(rotation) % 360
+
+    def set_render_options(self, settings: Mapping[str, Any]) -> bool:
+        """Store the camera look and re-render when a map is loaded."""
+        self._rotation = int(settings["rotation"]) % 360
+        self._max_px = int(settings["max_px"])
+        self._robot_style = settings["robot_style"]
+        self._robot_status = settings["robot_status"]
+        self._show_robot = settings["show_robot"]
+        self._show_trail = settings["show_trail"]
+        self._show_dock = settings["show_dock"]
+        self._style = settings["style"]
+        if self.map_data is None:
+            return False
+        self._render()
+        return True
+
+    def render_preview(self, settings: Mapping[str, Any]) -> bytes | None:
+        """Render the current map with draft settings, without saving them."""
+        if self.map_data is None:
+            return None
+        return render_map_png(
+            self.map_data,
+            robot_pixel=self._robot_pixel if settings["show_robot"] else None,
+            robot_trail=(self._robot_trail or None) if settings["show_trail"] else None,
+            cleaning_path=(self._cleaning_path or None)
+            if settings["show_trail"]
+            else None,
+            dock_pixel=self._dock_pixel if settings["show_dock"] else None,
+            robot_status=settings["robot_status"],
+            max_px=int(settings["max_px"]),
+            robot_style=settings["robot_style"],
+            rotation=int(settings["rotation"]),
+            style=settings["style"],
+        )
 
     def _apply_pending_layers(self, map_data: MapData) -> None:
         if self._pending_room_names:
@@ -1379,13 +1469,17 @@ class MapStreamHandler:
         try:
             self.map_image = render_map_png(
                 self.map_data,
-                robot_pixel=self._robot_pixel,
-                robot_trail=self._robot_trail or None,
-                cleaning_path=self._cleaning_path or None,
-                dock_pixel=self._dock_pixel,
-                robot_style="dot",
+                robot_pixel=self._robot_pixel if self._show_robot else None,
+                robot_trail=(self._robot_trail or None) if self._show_trail else None,
+                cleaning_path=(self._cleaning_path or None)
+                if self._show_trail
+                else None,
+                dock_pixel=self._dock_pixel if self._show_dock else None,
+                robot_status=self._robot_status,
+                max_px=self._max_px,
+                robot_style=self._robot_style,
                 rotation=self._rotation,
-                style=_CAMERA_MAP_STYLE,
+                style=self._style,
             )
         except Exception as exc:
             _LOGGER.debug("Map render failed: %s", exc)

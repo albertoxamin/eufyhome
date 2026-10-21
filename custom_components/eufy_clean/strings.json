@@ -32,9 +32,39 @@
     "step": {
       "init": {
         "title": "Map options",
-        "description": "Adjust how the live map camera image is rendered.",
+        "description": "![Map preview]({preview_url})\n\nThe picture updates when you submit with Update preview. Choose Save to keep this look on the camera.",
         "data": {
-          "map_rotation": "Clockwise rotation (degrees)"
+          "map_rotation": "Clockwise rotation (degrees)",
+          "c0": "Unknown floor",
+          "c1": "Wall",
+          "c2": "Free floor",
+          "c3": "Cleaned floor",
+          "r1": "Room 1",
+          "r2": "Room 2",
+          "r3": "Room 3",
+          "r4": "Room 4",
+          "r5": "Room 5",
+          "r6": "Room 6",
+          "r7": "Room 7",
+          "r8": "Room 8",
+          "path": "Path color",
+          "path_style": "Path style",
+          "path_width": "Path width",
+          "radius": "Embedded dot size",
+          "robot": "Robot",
+          "status": "Status badge",
+          "max_px": "Max pixels",
+          "dpi": "Render multiplier",
+          "label": "Label text",
+          "label_bg": "Label plate",
+          "label_size": "Label size",
+          "path_on": "Embedded path",
+          "trail": "Preview path",
+          "labels": "Room names",
+          "zones": "No-go zones",
+          "dock": "Dock",
+          "robot_on": "Robot marker",
+          "next_action": "When you submit"
         }
       }
     }

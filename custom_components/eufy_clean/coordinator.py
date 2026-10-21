@@ -74,6 +74,13 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as err:
             raise UpdateFailed(f"Error communicating with API: {err}") from err
 
+    def apply_map_options(self) -> None:
+        """Push saved map-look options to connected devices."""
+        for device in self.devices.values():
+            apply = getattr(device, "apply_render_options", None)
+            if apply is not None:
+                apply(self.entry.options)
+
     async def async_setup(self) -> bool:
         """Set up the coordinator."""
         try:
@@ -110,6 +117,7 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         session=self._session,
                         map_rotation=map_rotation,
                     )
+                    device.apply_render_options(self.entry.options)
                 else:
                     device = CloudDevice(
                         device_config=device_data,

@@ -20,7 +20,7 @@ from ..const import (
     NOVEL_DPS_MAP,
 )
 from .map_commands import build_map_get_all_command
-from .map_stream import MapStreamHandler
+from .map_stream import MapStreamHandler, render_settings_from_options
 from .proto_utils import (
     CLEAN_EXTENT_NARROW,
     CLEAN_EXTENT_NORMAL,
@@ -40,11 +40,11 @@ from .proto_utils import (
     decode_consumables,
     decode_dnd,
     decode_error_code,
+    explain_fault_code,
     decode_scene_list,
     decode_station_status,
     decode_work_status,
     enrich_station_status,
-    decode_work_status,
     encode_clean_param,
     encode_control_command,
     encode_dnd,
@@ -57,6 +57,11 @@ from .proto_utils import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _named_fault(code: int, fallback: str) -> str:
+    """Prefer the short legacy phrase, then the app enum phrase."""
+    return EUFY_CLEAN_ERROR_CODES.get(code) or explain_fault_code(code) or fallback
 
 # Work statuses where the robot is moving on the map (cleaning, returning, etc.)
 _ACTIVE_MAP_STATUSES = frozenset(
@@ -260,16 +265,14 @@ class BaseDevice:
 
             # Try to get human-readable error
             if decoded.get("errors"):
-                error_code = decoded["errors"][0]
-                return EUFY_CLEAN_ERROR_CODES.get(error_code, error_text)
-            elif decoded.get("warnings"):
-                warn_code = decoded["warnings"][0]
-                return EUFY_CLEAN_ERROR_CODES.get(warn_code, error_text)
+                return _named_fault(decoded["errors"][0], error_text)
+            if decoded.get("warnings"):
+                return _named_fault(decoded["warnings"][0], error_text)
 
             return error_text
 
         if isinstance(error, int):
-            return EUFY_CLEAN_ERROR_CODES.get(error, f"unknown_error_{error}")
+            return _named_fault(error, f"unknown_error_{error}")
 
         return error if error else "none"
 
@@ -681,6 +684,7 @@ class MqttDevice(BaseDevice):
         self._key_path: str | None = None
         self._map_requested = False
         self._empty_room_polls = 0
+        self._last_work_status: str | None = None
 
     def map_data(self, dps: dict[str, Any]) -> None:
         """Map DPS data and merge any room list into the live map handler."""
@@ -740,6 +744,15 @@ class MqttDevice(BaseDevice):
         if self._map_handler.map_data is not None:
             self._map_handler._render()
             self._notify_update()
+
+    def apply_render_options(self, options: dict[str, Any]) -> None:
+        """Apply saved map-look options and refresh the camera image."""
+        if self._map_handler.set_render_options(render_settings_from_options(options)):
+            self._notify_update()
+
+    def render_preview(self, options: dict[str, Any]) -> bytes | None:
+        """Render the current map with draft options, without saving them."""
+        return self._map_handler.render_preview(render_settings_from_options(options))
 
     async def request_map_download(self) -> None:
         """Trigger P2P map download via DPS 172 MAP_GET_ALL."""
@@ -828,16 +841,24 @@ class MqttDevice(BaseDevice):
         else:
             _LOGGER.error("MQTT connection failed with code %d", rc)
 
+    def _update_map_tracking(self) -> None:
+        """Sync live trail accumulation with the current work status."""
+        work_status = self.get_work_status()
+        if (
+            work_status == "cleaning"
+            and self._last_work_status not in (None, "cleaning")
+        ):
+            self._map_handler.clear_trail_on_new_session()
+        self._last_work_status = work_status
+        self._map_handler.set_tracking_active(work_status in _ACTIVE_MAP_STATUSES)
+
     def _on_message(self, client, userdata, msg):
         """Handle MQTT message."""
         try:
             topic_biz = f"biz/eufy_home/{self._device_model}/{self._device_id}/res"
             if msg.topic == topic_biz:
                 updated = self._map_handler.handle_biz_payload(msg.payload)
-                work_status = self.get_work_status()
-                self._map_handler.set_tracking_active(
-                    work_status in _ACTIVE_MAP_STATUSES
-                )
+                self._update_map_tracking()
                 if updated or self._map_handler.map_data is not None:
                     self._notify_update()
                 return
@@ -851,10 +872,7 @@ class MqttDevice(BaseDevice):
             dps = data.get("data", {})
             if dps:
                 self.map_data(dps)
-                work_status = self.get_work_status()
-                self._map_handler.set_tracking_active(
-                    work_status in _ACTIVE_MAP_STATUSES
-                )
+                self._update_map_tracking()
                 _LOGGER.debug("Received MQTT data: %s", dps)
         except Exception as err:
             _LOGGER.error("Error processing MQTT message: %s", err)

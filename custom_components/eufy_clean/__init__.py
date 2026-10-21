@@ -14,6 +14,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 
 from .api import EufyCleanApi
+from .config_flow import async_register_map_preview
 from .const import DOMAIN
 from .coordinator import EufyCleanDataUpdateCoordinator
 
@@ -39,6 +40,7 @@ ATTR_CLEAN_TIMES = "clean_times"
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Eufy Clean from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+    async_register_map_preview(hass)
 
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
@@ -53,6 +55,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -140,6 +143,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_shutdown()
 
     return unload_ok
+
+
+async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply saved map-look options without reconnecting."""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    apply = getattr(coordinator, "apply_map_options", None)
+    if apply is not None:
+        apply()
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
