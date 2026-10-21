@@ -27,6 +27,21 @@ _PIXEL_COLORS: dict[int, tuple[int, int, int]] = {
 # Orange overlay for live robot trail and visited-pixel highlights.
 _PATH_OVERLAY: tuple[int, int, int] = (255, 140, 0)
 
+# Look chosen in the map preview. The camera render uses this.
+_CAMERA_MAP_STYLE: dict[str, Any] = {
+    "path_color": (255, 255, 255),
+    "path_style": "segmented",
+    "path_width": 2,
+    "path_radius_scale": 1.9,
+    "render_scale": 2,
+    "label_color": (0x1E, 0x1E, 0x1E),
+    "label_bg": (255, 255, 255),
+    "label_size": 8,
+    "show_embedded_path": True,
+    "show_labels": True,
+    "show_zones": True,
+}
+
 _MAX_TRAIL_POINTS = 8000
 
 # Special room-mask ids from p2pdata.proto MapPixels encoding.
@@ -1368,7 +1383,9 @@ class MapStreamHandler:
                 robot_trail=self._robot_trail or None,
                 cleaning_path=self._cleaning_path or None,
                 dock_pixel=self._dock_pixel,
+                robot_style="dot",
                 rotation=self._rotation,
+                style=_CAMERA_MAP_STYLE,
             )
         except Exception as exc:
             _LOGGER.debug("Map render failed: %s", exc)

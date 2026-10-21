@@ -7,7 +7,6 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
@@ -50,7 +49,7 @@ class EufyCleanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> EufyCleanOptionsFlowHandler:
         """Return the options flow handler."""
-        return EufyCleanOptionsFlowHandler(config_entry)
+        return EufyCleanOptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -139,9 +138,6 @@ class EufyCleanConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class EufyCleanOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle map display options."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
