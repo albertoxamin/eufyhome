@@ -274,7 +274,7 @@ class EufyRoomSelect(
     def _handle_device_update(self) -> None:
         """Refresh options when room names arrive from the map stream."""
         if self._refresh_room_options():
-            self.schedule_update_ha_state(force_refresh=True)
+            self.async_write_ha_state()
 
     def _get_rooms(self) -> list[dict[str, Any]]:
         if self.coordinator.data and self._device.device_id in self.coordinator.data:

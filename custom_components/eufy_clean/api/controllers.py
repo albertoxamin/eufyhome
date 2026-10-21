@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
@@ -76,6 +77,8 @@ class BaseDevice:
         self._novel_api = self._api_type == "novel"
         self._dps_map = NOVEL_DPS_MAP if self._novel_api else LEGACY_DPS_MAP
         self._update_callbacks: list[Callable[[], None]] = []
+        # Captured when a callback is registered from the HA event loop.
+        self._update_loop: asyncio.AbstractEventLoop | None = None
         # From API DPS decode when available, else fallback to model set
         self._supports_clean_type: bool = device_config.get(
             "supports_clean_type",
@@ -110,7 +113,16 @@ class BaseDevice:
         return self._supports_clean_type
 
     def add_update_callback(self, callback: Callable[[], None]) -> None:
-        """Add callback for data updates."""
+        """Add callback for data updates.
+
+        Call this from the event loop. Later notifies from the MQTT thread
+        are scheduled back onto that loop.
+        """
+        if self._update_loop is None:
+            try:
+                self._update_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._update_loop = None
         self._update_callbacks.append(callback)
 
     def remove_update_callback(self, callback: Callable[[], None]) -> None:
@@ -119,8 +131,21 @@ class BaseDevice:
             self._update_callbacks.remove(callback)
 
     def _notify_update(self) -> None:
-        """Notify all callbacks of data update."""
-        for callback in self._update_callbacks:
+        """Notify callbacks. Safe to call from the MQTT thread."""
+        loop = self._update_loop
+        if loop is not None:
+            try:
+                on_loop = asyncio.get_running_loop() is loop
+            except RuntimeError:
+                on_loop = False
+            if not on_loop:
+                if loop.is_running():
+                    try:
+                        loop.call_soon_threadsafe(self._notify_update)
+                    except RuntimeError:
+                        _LOGGER.debug("Event loop closed; dropping device update")
+                return
+        for callback in list(self._update_callbacks):
             try:
                 callback()
             except Exception as err:

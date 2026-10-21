@@ -217,7 +217,7 @@ class EufyCleanMapCamera(Camera):
 
     def _handle_device_update(self) -> None:
         """Refresh map image when the MQTT stream updates."""
-        self.schedule_update_ha_state(force_refresh=True)
+        self.async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:

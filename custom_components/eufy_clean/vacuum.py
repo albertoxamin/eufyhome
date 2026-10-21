@@ -146,7 +146,7 @@ class EufyCleanVacuum(
 
     def _handle_device_update(self) -> None:
         """Refresh vacuum state when map rooms or image change."""
-        self.schedule_update_ha_state(force_refresh=True)
+        self.async_write_ha_state()
 
     def _get_rooms(self) -> list[dict[str, Any]]:
         """Return the latest room list from coordinator or device."""
