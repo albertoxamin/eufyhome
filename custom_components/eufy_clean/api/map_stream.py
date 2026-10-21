@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 import json
 import logging
+import math
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,13 +24,7 @@ _PIXEL_COLORS: dict[int, tuple[int, int, int]] = {
     3: (200, 200, 200), # CLEANED / carpet — same as free floor so it blends in
 }
 
-# Background outside the room partition mask (matches app-style clipping).
-_BG_OUTSIDE: tuple[int, int, int] = (45, 45, 45)
-
-# Darker trace for cleaned / visited pixels inside a room.
-_PATH_INSIDE_ROOM: tuple[int, int, int] = (210, 110, 35)
-
-# Orange overlay for streamed trajectory and visited-pixel highlights.
+# Orange overlay for live robot trail and visited-pixel highlights.
 _PATH_OVERLAY: tuple[int, int, int] = (255, 140, 0)
 
 _MAX_TRAIL_POINTS = 8000
@@ -48,52 +44,62 @@ def _map_pixel_value(raw: bytes, width: int, x: int, y: int) -> int:
     return (raw[byte_pos] >> bit_pos) & 3
 
 
-def _visited_path_pixels(
+def _room_mask_at(
     map_data: MapData,
-) -> list[tuple[int, int]]:
-    """Return map pixels that look like a cleaning trace (pv=0 on explored floor)."""
+    px_x: int,
+    py: int,
+) -> tuple[int, int]:
+    """Return (room_id, sub_type) at a map pixel from the room outline mask."""
+    room_px = map_data.room_pixels
+    if (
+        room_px is None
+        or not map_data.room_outline_width
+        or not map_data.room_outline_height
+    ):
+        return 0, 0
+    res = map_data.resolution or 5
+    ro_w = map_data.room_outline_width
+    ro_h = map_data.room_outline_height
+    ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
+    ro_dy = round((map_data.origin_y - map_data.room_outline_origin_y) / res)
+    rx, ry = px_x - ro_dx, py - ro_dy
+    if 0 <= rx < ro_w and 0 <= ry < ro_h:
+        rpx = room_px[ry * ro_w + rx]
+        return rpx >> 2, rpx & 3
+    return 0, 0
+
+
+def _visited_path_pixels(map_data: MapData) -> list[tuple[int, int]]:
+    """Return map pixels that encode a cleaning trace in the base map pixels.
+
+    Matches jeppesens/eufy-clean: inside a room partition, trace pixels are the
+    darker pv values where sub_type != 0 and pv is not free/cleaned floor.
+    """
     raw = map_data.raw_pixels
     width, height = map_data.width, map_data.height
     room_px = map_data.room_pixels
-    res = map_data.resolution or 5
     points: list[tuple[int, int]] = []
-
-    def _room_id(px_x: int, py: int) -> int:
-        if (
-            room_px is None
-            or not map_data.room_outline_width
-            or not map_data.room_outline_height
-        ):
-            return 0
-        ro_w = map_data.room_outline_width
-        ro_h = map_data.room_outline_height
-        ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
-        ro_dy = round((map_data.origin_y - map_data.room_outline_origin_y) / res)
-        rx, ry = px_x - ro_dx, py - ro_dy
-        if 0 <= rx < ro_w and 0 <= ry < ro_h:
-            return room_px[ry * ro_w + rx] >> 2
-        return 0
 
     for py in range(height):
         for px_x in range(width):
             pv = _map_pixel_value(raw, width, px_x, py)
-            if pv not in (0, 3):
+            if room_px is not None:
+                rid, sub_type = _room_mask_at(map_data, px_x, py)
+                if rid == _ROOM_MASK_OBSTACLE or pv == 1:
+                    continue
+                if rid > 0 and sub_type != 0 and pv not in (2, 3):
+                    points.append((px_x, py))
                 continue
-            rid = _room_id(px_x, py)
+            if pv != 0:
+                continue
             touches_floor = False
             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                 nx, ny = px_x + dx, py + dy
                 if 0 <= nx < width and 0 <= ny < height:
-                    neighbor = _map_pixel_value(raw, width, nx, ny)
-                    if neighbor in (2, 3):
+                    if _map_pixel_value(raw, width, nx, ny) in (2, 3):
                         touches_floor = True
                         break
-            if not touches_floor:
-                continue
-            if room_px is not None:
-                if _is_valid_room_id(rid) or rid == _ROOM_MASK_GAP:
-                    points.append((px_x, py))
-            elif pv == 0:
+            if touches_floor:
                 points.append((px_x, py))
     return points
 
@@ -102,37 +108,29 @@ def _is_valid_room_id(rid: int) -> bool:
     return 1 <= rid <= 31
 
 
-def _tint(rgb: tuple[int, int, int], delta: int) -> tuple[int, int, int]:
-    return tuple(max(0, min(255, c + delta)) for c in rgb)
-
-
-def _color_with_room_mask(
+def _pixel_color_for_room_mask(
     pv: int,
     rid: int,
     sub_type: int,
     palette_len: int,
+    pixel_colors: dict[int, tuple[int, int, int]] | None = None,
+    room_palette: list[tuple[int, int, int]] | None = None,
 ) -> tuple[int, int, int]:
-    """Render using the room partition mask to clip lidar exploration noise.
+    """Color a map pixel using the room partition mask (jeppesens/eufy-clean logic).
 
-    Inside a labelled room: solid room colour except true walls and the
-    darker cleaning trace (unknown / carpet pixels).
-    Outside rooms: dark background with only obstacle pixels kept (wall clip).
+    Inside rooms: solid room colour for floor, darker map pixels for the trace.
+    Outside rooms: raw map pixel colours so corridors still show the path.
     """
-    if rid == _ROOM_MASK_OBSTACLE or pv == 1 or sub_type == 1:
-        return _PIXEL_COLORS[1]
-    if _is_valid_room_id(rid):
-        base = _ROOM_PALETTE[1 + (rid - 1) % (palette_len - 1)]
-        if pv == 0:
-            return _PATH_INSIDE_ROOM
-        if pv == 3:
-            return _tint(base, -35)
-        return base
-    if rid == _ROOM_MASK_GAP:
-        if pv == 0:
-            return _PATH_INSIDE_ROOM
-        return _PIXEL_COLORS[2]
-    # Outside partitioned rooms (rid 0, or unused ids): clip exploration noise.
-    return _BG_OUTSIDE
+    colors = _PIXEL_COLORS if pixel_colors is None else pixel_colors
+    palette = _ROOM_PALETTE if room_palette is None else room_palette
+    palette_len = len(palette)
+    if rid == _ROOM_MASK_OBSTACLE or pv == 1:
+        return colors[1]
+    if rid > 0:
+        if sub_type == 0 or pv in (2, 3):
+            return palette[1 + (rid - 1) % (palette_len - 1)]
+        return colors.get(pv, (30, 30, 30))
+    return colors.get(pv, (30, 30, 30))
 
 
 # Room ID → RGB.  Index 0 = wall/outside (unused in combined render); 1-N cycle.
@@ -406,6 +404,7 @@ def render_map_png(
     max_px: int = _MAX_PNG_PX,
     robot_style: str = "googly",
     rotation: int = 0,
+    style: dict[str, Any] | None = None,
 ) -> bytes:
     """Render a PNG from MapData using Pillow.
 
@@ -415,6 +414,24 @@ def render_map_png(
     3. Draw restricted zones, room labels, dock icon, trail, robot marker.
     4. Encode to PNG bytes via img.save().
     """
+    style = style or {}
+    pixel_colors = style.get("pixel_colors") or _PIXEL_COLORS
+    room_palette = style.get("room_palette") or _ROOM_PALETTE
+    path_color = tuple(style["path_color"]) if style.get("path_color") else _PATH_OVERLAY
+    path_radius_scale = float(style.get("path_radius_scale", 1.2))
+    path_width = min(max(int(style.get("path_width") or 1), 1), 12)
+    path_style = style.get("path_style") or "solid"
+    if path_style not in ("solid", "dotted", "segmented"):
+        path_style = "solid"
+    show_embedded_path = bool(style.get("show_embedded_path", True))
+    show_labels = bool(style.get("show_labels", True))
+    show_zones = bool(style.get("show_zones", True))
+    render_scale = float(style.get("render_scale") or 1)
+    render_scale = min(max(render_scale, 1.0), 6.0)
+    label_color = tuple(style["label_color"]) if style.get("label_color") else (30, 30, 30)
+    label_bg = tuple(style["label_bg"]) if style.get("label_bg") else (255, 255, 255)
+    label_size = int(style.get("label_size") or 9)
+
     width, height = map_data.width, map_data.height
     if width * height > 4000 * 4000:
         raise ValueError(f"Map dimensions {width}x{height} exceed safety limit (max 4000x4000)")
@@ -436,7 +453,7 @@ def render_map_png(
         _ro_h = map_data.room_outline_height
         _ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
         _ro_dy = round((map_data.origin_y - map_data.room_outline_origin_y) / res)
-        palette_len = len(_ROOM_PALETTE)
+        palette_len = len(room_palette)
         for py in range(height):
             for px_x in range(width):
                 i = py * width + px_x
@@ -450,7 +467,14 @@ def render_map_png(
                     sub_type = rpx & 3
                 else:
                     rid = sub_type = 0
-                color = _color_with_room_mask(pv, rid, sub_type, palette_len)
+                color = _pixel_color_for_room_mask(
+                    pv,
+                    rid,
+                    sub_type,
+                    palette_len,
+                    pixel_colors=pixel_colors,
+                    room_palette=room_palette,
+                )
                 colors.append(color)
                 if _has_room_names and rid > 0 and rid in map_data.room_names:
                     if rid not in src_centroids:
@@ -463,7 +487,7 @@ def render_map_png(
             byte_pos = i >> 2
             bit_pos = (i & 3) * 2
             pv = (raw[byte_pos] >> bit_pos) & 3 if byte_pos < len(raw) else 0
-            colors.append(_PIXEL_COLORS.get(pv, (30, 30, 30)))
+            colors.append(pixel_colors.get(pv, (30, 30, 30)))
 
     # ------------------------------------------------------------------
     # Step 2 — create PIL image, Y-flip, scale
@@ -472,11 +496,16 @@ def render_map_png(
     img.putdata(colors)
     img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
-    scale = min(max_px / max(width, height), 1.0)
+    fit = min(max_px / max(width, height), 1.0)
+    scale = fit * render_scale
     out_w = max(1, round(width * scale))
     out_h = max(1, round(height * scale))
-    if scale < 1.0:
-        img = img.resize((out_w, out_h), Image.Resampling.LANCZOS)
+    if abs(scale - 1.0) > 1e-6:
+        # Upscale with nearest so room pixels stay crisp; text is drawn after, at this size.
+        resample = (
+            Image.Resampling.NEAREST if render_scale > 1 else Image.Resampling.LANCZOS
+        )
+        img = img.resize((out_w, out_h), resample)
 
     draw = ImageDraw.Draw(img)
 
@@ -504,21 +533,22 @@ def render_map_png(
     _BAN_MOP_COLOR = (255, 165, 0)
     _ZONE_COLOR = (220, 50, 50)
 
-    for zone in map_data.ban_mop_zones:
-        pts = [_world_to_out(p[0], p[1]) for p in zone]
-        if len(pts) >= 2:
-            draw.polygon(pts, outline=_BAN_MOP_COLOR)
+    if show_zones:
+        for zone in map_data.ban_mop_zones:
+            pts = [_world_to_out(p[0], p[1]) for p in zone]
+            if len(pts) >= 2:
+                draw.polygon(pts, outline=_BAN_MOP_COLOR)
 
-    for zone in map_data.forbidden_zones:
-        pts = [_world_to_out(p[0], p[1]) for p in zone]
-        if len(pts) >= 2:
-            draw.polygon(pts, outline=_ZONE_COLOR)
+        for zone in map_data.forbidden_zones:
+            pts = [_world_to_out(p[0], p[1]) for p in zone]
+            if len(pts) >= 2:
+                draw.polygon(pts, outline=_ZONE_COLOR)
 
-    for wall in map_data.virtual_walls:
-        draw.line(
-            [_world_to_out(wall[0][0], wall[0][1]), _world_to_out(wall[1][0], wall[1][1])],
-            fill=_ZONE_COLOR,
-        )
+        for wall in map_data.virtual_walls:
+            draw.line(
+                [_world_to_out(wall[0][0], wall[0][1]), _world_to_out(wall[1][0], wall[1][1])],
+                fill=_ZONE_COLOR,
+            )
 
     # ------------------------------------------------------------------
     # Step 4 — dock icon (pixel-art house)
@@ -557,21 +587,63 @@ def render_map_png(
         if not raw_pts:
             return
         out_pts = [_to_out(tx, ty) for tx, ty in raw_pts]
+        # Width is output pixels, not multiplied by render scale, so a 3× image can stay skinny.
+        stroke = path_width
+        dot_step = max(stroke * 3, round(6 * render_scale))
+        dash = max(stroke * 2, round(10 * render_scale))
+        gap = max(stroke * 2, round(7 * render_scale))
+        traveled = 0.0
+
+        def _stroke(p0: tuple[float, float], p1: tuple[float, float]) -> None:
+            nonlocal traveled
+            x0, y0 = p0
+            x1, y1 = p1
+            dist = math.hypot(x1 - x0, y1 - y0)
+            if dist < 0.5:
+                return
+            if path_style == "solid":
+                draw.line([p0, p1], fill=path_color, width=stroke)
+                traveled += dist
+                return
+            ux, uy = (x1 - x0) / dist, (y1 - y0) / dist
+            pos = 0.0
+            if path_style == "dotted":
+                while pos <= dist:
+                    _circle(x0 + ux * pos, y0 + uy * pos, max(0.6, stroke / 2), path_color)
+                    pos += dot_step
+                traveled += dist
+                return
+            cycle = dash + gap
+            while pos < dist:
+                into = (traveled + pos) % cycle
+                if into < dash:
+                    run = min(dash - into, dist - pos)
+                    if run <= 0:
+                        pos += 1
+                        continue
+                    draw.line(
+                        [(x0 + ux * pos, y0 + uy * pos), (x0 + ux * (pos + run), y0 + uy * (pos + run))],
+                        fill=path_color,
+                        width=stroke,
+                    )
+                    pos += run
+                else:
+                    skip = cycle - into
+                    pos += skip if skip > 0 else 1
+            traveled += dist
+
         if len(raw_pts) == 1:
             ox, oy = out_pts[0]
-            if 0 <= ox < out_w and 0 <= oy < out_h:
-                _circle(ox, oy, 2.0, _PATH_OVERLAY)
+            _circle(ox, oy, max(0.6, stroke / 2), path_color)
             return
         for i in range(len(raw_pts) - 1):
             if breaks and i + 1 < len(breaks) and breaks[i + 1]:
+                traveled = 0.0
                 continue
             ddx = raw_pts[i + 1][0] - raw_pts[i][0]
             ddy = raw_pts[i + 1][1] - raw_pts[i][1]
             if ddx * ddx + ddy * ddy <= _MAX_TRAIL_JUMP_SQ:
-                draw.line([out_pts[i], out_pts[i + 1]], fill=_PATH_OVERLAY)
-        ox, oy = out_pts[-1]
-        if 0 <= ox < out_w and 0 <= oy < out_h:
-            draw.point((ox, oy), fill=_PATH_OVERLAY)
+                _stroke(out_pts[i], out_pts[i + 1])
 
     if cleaning_path:
         path_pixels: list[tuple[int, int]] = []
@@ -587,22 +659,25 @@ def render_map_png(
     if robot_trail:
         _draw_path_segments(list(robot_trail))
 
-    if map_data.raw_pixels:
+    if show_embedded_path and map_data.raw_pixels:
+        dot_r = max(1.0, scale * path_radius_scale)
         for px_x, py in _visited_path_pixels(map_data):
             ox, oy = _to_out(px_x, py)
             if 0 <= ox < out_w and 0 <= oy < out_h:
-                draw.point((ox, oy), fill=_PATH_OVERLAY)
+                _circle(ox, oy, dot_r, path_color)
 
     # ------------------------------------------------------------------
     # Step 6 — room name labels (after trail so labels render on top)
     # ------------------------------------------------------------------
-    if src_centroids:
+    if show_labels and src_centroids:
+        label_px = max(8, round(label_size * render_scale))
         try:
-            font: ImageFont.ImageFont | ImageFont.FreeTypeFont = ImageFont.load_default(size=9)
+            font: ImageFont.ImageFont | ImageFont.FreeTypeFont = ImageFont.load_default(
+                size=label_px
+            )
         except TypeError:
             font = ImageFont.load_default()
-        _LABEL_COLOR = (30, 30, 30)
-        _LABEL_BG = (255, 255, 255)
+        pad = max(1, round(2 * render_scale))
         for rid, vals in src_centroids.items():
             if vals[2] == 0:
                 continue
@@ -614,35 +689,52 @@ def render_map_png(
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
             draw.rectangle(
-                [(ox - tw // 2 - 2, oy - th // 2 - 1), (ox + tw // 2 + 2, oy + th // 2 + 1)],
-                fill=_LABEL_BG,
+                [
+                    (ox - tw // 2 - pad, oy - th // 2 - pad // 2),
+                    (ox + tw // 2 + pad, oy + th // 2 + pad // 2),
+                ],
+                fill=label_bg,
             )
-            draw.text((ox - tw // 2 - bbox[0], oy - th // 2 - bbox[1]), label, fill=_LABEL_COLOR, font=font)
+            draw.text(
+                (ox - tw // 2 - bbox[0], oy - th // 2 - bbox[1]),
+                label,
+                fill=label_color,
+                font=font,
+            )
 
     # ------------------------------------------------------------------
     # Step 7 — robot marker + status badge
     # ------------------------------------------------------------------
     if robot_pixel is not None:
         orx, ory = _to_out(robot_pixel[0], robot_pixel[1])
-        if robot_style == "dot":
-            _circle(orx, ory, 5.0, (20, 20, 20))
-            _circle(orx, ory, 4.0, (55, 55, 55))
+        icon = style.get("robot_icon")
+        if robot_style == "svg" and icon:
+            glyph = Image.open(io.BytesIO(icon)).convert("RGBA")
+            side = max(12, round(28 * render_scale))
+            glyph = glyph.resize((side, side), Image.Resampling.LANCZOS)
+            base = img.convert("RGBA")
+            base.paste(glyph, (orx - side // 2, ory - side // 2), glyph)
+            img = base
+            draw = ImageDraw.Draw(img)
+        elif robot_style == "dot":
+            _circle(orx, ory, 5.0 * render_scale, (20, 20, 20))
+            _circle(orx, ory, 4.0 * render_scale, (55, 55, 55))
         else:  # "googly" (default)
-            _circle(orx, ory, 7.0, (160, 70, 0))
-            _circle(orx, ory, 6.0, (255, 140, 0))
+            _circle(orx, ory, 7.0 * render_scale, (160, 70, 0))
+            _circle(orx, ory, 6.0 * render_scale, (255, 140, 0))
             for ex, ey in ((-1, -1), (2, -1)):
-                _circle(orx + ex, ory + ey, 1.5, (255, 255, 255))
-                _circle(orx + ex, ory + ey, 0.6, (20, 20, 20))
+                _circle(orx + ex * render_scale, ory + ey * render_scale, 1.5 * render_scale, (255, 255, 255))
+                _circle(orx + ex * render_scale, ory + ey * render_scale, 0.6 * render_scale, (20, 20, 20))
 
         if robot_status and robot_status in _STATUS_BADGE:
             badge_color, icon_offsets = _STATUS_BADGE[robot_status]
-            bx, by = orx + 6, ory - 6
-            _circle(bx, by, 6.0, (30, 30, 30))
-            _circle(bx, by, 5.0, badge_color)
+            bx, by = orx + round(6 * render_scale), ory - round(6 * render_scale)
+            _circle(bx, by, 6.0 * render_scale, (30, 30, 30))
+            _circle(bx, by, 5.0 * render_scale, badge_color)
             for ox2, oy2 in icon_offsets:
-                bpx, bpy = bx + ox2, by + oy2
-                if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                    draw.point((bpx, bpy), fill=(20, 20, 20))
+                bpx = bx + round(ox2 * render_scale)
+                bpy = by + round(oy2 * render_scale)
+                _circle(bpx, bpy, max(0.6, 0.45 * render_scale), (20, 20, 20))
 
     # ------------------------------------------------------------------
     # Step 8 — optional rotation + encode PNG
@@ -986,6 +1078,13 @@ class MapStreamHandler:
         self._pending_room_names: dict[int, str] = {}
         self._pending_room_outline: tuple[bytes, int, int, int, int] | None = None
         self._pending_restricted_zones: RestrictedZoneLayers | None = None
+        self._last_pose_render = 0.0
+
+    def clear_trail_on_new_session(self) -> None:
+        """Clear live trail when a new cleaning session starts."""
+        self._robot_trail.clear()
+        self._cleaning_path.clear()
+        self._robot_pixel = None
 
     def _append_trail_point(self, robot_px: tuple[int, int]) -> None:
         """Append a robot pose to the live trail, filtering teleports."""
@@ -998,9 +1097,9 @@ class MapStreamHandler:
         if self.map_data is None:
             self._robot_trail.append(robot_px)
         else:
-            max_step = max(self.map_data.width, self.map_data.height) // 8
+            max_step = max(self.map_data.width, self.map_data.height) // 10
             dist_sq = dx * dx + dy * dy
-            if 1 <= dist_sq <= max_step * max_step:
+            if 9 <= dist_sq <= max_step * max_step:
                 self._robot_trail.append(robot_px)
         if len(self._robot_trail) > _MAX_TRAIL_POINTS:
             self._robot_trail = self._robot_trail[-_MAX_TRAIL_POINTS :]
@@ -1012,11 +1111,19 @@ class MapStreamHandler:
         robot_px = _pose_to_pixel(self.map_data, x_cm, y_cm)
         if robot_px is None:
             return False
+        trail_updated = False
         if self._tracking_active:
+            before = len(self._robot_trail)
             self._append_trail_point(robot_px)
+            trail_updated = len(self._robot_trail) != before
+        changed_pixel = robot_px != self._robot_pixel
         self._robot_pixel = robot_px
-        self._render()
-        return True
+        now = time.monotonic()
+        if (changed_pixel or trail_updated) and now - self._last_pose_render >= 1.5:
+            self._last_pose_render = now
+            self._render()
+            return True
+        return False
 
     def _ingest_path_points(self, path_pts: list[tuple[int, int, bool]]) -> bool:
         """Merge streamed path points and re-render when possible."""
@@ -1131,6 +1238,14 @@ class MapStreamHandler:
 
         if zones := try_extract_restricted_zone(hex_data):
             return self._merge_restricted_zone(zones)
+
+        # Small biz/ frames carry robot pose (DynamicData) and path points.
+        if len(hex_data) < 200:
+            if pose := try_decode_as_dynamic_data(hex_data):
+                return self._ingest_pose(pose[0], pose[1])
+            if path_pts := try_extract_path_points(hex_data):
+                return self._ingest_path_points(path_pts)
+            return False
 
         if self._frame_matches_channel(channel_id, self._path_channel_id):
             if path_pts := try_extract_path_points(hex_data):
