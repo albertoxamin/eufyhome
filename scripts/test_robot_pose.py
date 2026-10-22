@@ -16,6 +16,7 @@ from eufy_clean.api.map_stream import (  # noqa: E402
     MapData,
     MapStreamHandler,
     _dock_cm_from_info,
+    _rotated_point,
     _exact_path_point,
     _pose_on_map,
     stream_pb2,
@@ -80,6 +81,9 @@ def main() -> None:
     house.dock_cm = (257, -859)
     live._place_dock(house)
     assert live._dock_pixel == (105, 35)
+    assert _rotated_point(2, 5, 10, 20, 90) == (14, 2)
+    assert _rotated_point(2, 5, 10, 20, 180) == (7, 14)
+    assert _rotated_point(2, 5, 10, 20, 270) == (5, 7)
     print("ok", live.robot_pixel, "dock", live._dock_pixel)
 
 

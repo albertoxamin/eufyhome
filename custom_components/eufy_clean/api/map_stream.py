@@ -7,6 +7,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
@@ -452,6 +453,41 @@ def _rotate_image(img: Image.Image, degrees: int) -> Image.Image:
     return img.transpose(transpose)
 
 
+def _bundled_icon(filename: str) -> Image.Image | None:
+    """Load a map sprite shipped next to this component. Cached for live updates."""
+    cache: dict[str, Image.Image | None] = getattr(_bundled_icon, "_cache", {})
+    if filename not in cache:
+        path = Path(__file__).resolve().parent.parent / "assets" / filename
+        try:
+            cache[filename] = Image.open(path).convert("RGBA")
+        except OSError:
+            cache[filename] = None
+        _bundled_icon._cache = cache  # type: ignore[attr-defined]
+    return cache[filename]
+
+
+def _blit_icon(img: Image.Image, icon: Image.Image, cx: int, cy: int, width: int) -> Image.Image:
+    """Paste an RGBA sprite centered on a map pixel. Width is in output pixels."""
+    width = max(1, width)
+    height = max(1, round(width * icon.height / icon.width))
+    glyph = icon.resize((width, height), Image.Resampling.LANCZOS)
+    base = img.convert("RGBA")
+    base.paste(glyph, (cx - width // 2, cy - height // 2), glyph)
+    return base.convert("RGB")
+
+
+def _rotated_point(x: int, y: int, width: int, height: int, degrees: int) -> tuple[int, int]:
+    """Map a point through the same clockwise turn as ``_rotate_image``."""
+    degrees = int(degrees) % 360
+    if degrees == 90:
+        return height - 1 - y, x
+    if degrees == 180:
+        return width - 1 - x, height - 1 - y
+    if degrees == 270:
+        return y, width - 1 - x
+    return x, y
+
+
 def _decode_room_pixels(pixels: bytes, pixel_size: int) -> bytes:
     if len(pixels) != pixel_size:
         return _lz4_block_decompress(pixels, pixel_size)
@@ -629,36 +665,8 @@ def render_map_png(
             )
 
     # ------------------------------------------------------------------
-    # Step 4 — dock icon (pixel-art house)
-    # (labels drawn after trail in step 6 so they render on top)
-    # ------------------------------------------------------------------
-    if dock_pixel is not None:
-        dx, dy = _to_out(dock_pixel[0], dock_pixel[1])
-        cell = max(1, round(render_scale))
-        _house_border = {
-            (nx, ny)
-            for ox, oy in _HOUSE_FILL
-            for nx, ny in ((ox + ddx, oy + ddy) for ddx in (-1, 0, 1) for ddy in (-1, 0, 1))
-            if (nx, ny) not in _HOUSE_FILL
-        }
-
-        def _stamp(ox: int, oy: int, color: tuple[int, int, int]) -> None:
-            bpx, bpy = dx + ox * cell, dy + oy * cell
-            if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.rectangle(
-                    [bpx, bpy, bpx + cell - 1, bpy + cell - 1],
-                    fill=color,
-                )
-
-        for ox, oy in _house_border:
-            _stamp(ox, oy, (100, 75, 0))
-        for ox, oy in _HOUSE_FILL:
-            _stamp(ox, oy, (255, 215, 0))
-        for ox, oy in _HOUSE_DOOR:
-            _stamp(ox, oy, (100, 75, 0))
-
-    # ------------------------------------------------------------------
-    # Step 5 — cleaning trail / streamed path
+    # Step 4 — cleaning trail / streamed path
+    # Dock, labels, and the robot are drawn after rotation so they stay upright.
     # ------------------------------------------------------------------
     # About 1.5 m at 5 cm/pixel. Longer gaps are a new segment, not a line across the map.
     _MAX_TRAIL_JUMP_SQ = 30 * 30
@@ -753,8 +761,47 @@ def render_map_png(
                 _circle(ox, oy, dot_r, path_color)
 
     # ------------------------------------------------------------------
-    # Step 6 — room name labels (after trail so labels render on top)
+    # Step 5 — rotate the floor, then draw upright labels and icons
     # ------------------------------------------------------------------
+    pre_w, pre_h = img.size
+    if rotation:
+        img = _rotate_image(img, rotation)
+    draw = ImageDraw.Draw(img)
+    out_w, out_h = img.size
+
+    def _upright(x: int, y: int) -> tuple[int, int]:
+        return _rotated_point(x, y, pre_w, pre_h, rotation)
+
+    if dock_pixel is not None:
+        dx, dy = _upright(*_to_out(dock_pixel[0], dock_pixel[1]))
+        station = _bundled_icon("t2280_map_station.png")
+        if station is not None:
+            img = _blit_icon(img, station, dx, dy, max(16, round(36 * render_scale)))
+            draw = ImageDraw.Draw(img)
+        else:
+            cell = max(1, round(render_scale))
+            _house_border = {
+                (nx, ny)
+                for ox, oy in _HOUSE_FILL
+                for nx, ny in ((ox + ddx, oy + ddy) for ddx in (-1, 0, 1) for ddy in (-1, 0, 1))
+                if (nx, ny) not in _HOUSE_FILL
+            }
+
+            def _stamp(ox: int, oy: int, color: tuple[int, int, int]) -> None:
+                bpx, bpy = dx + ox * cell, dy + oy * cell
+                if 0 <= bpx < out_w and 0 <= bpy < out_h:
+                    draw.rectangle(
+                        [bpx, bpy, bpx + cell - 1, bpy + cell - 1],
+                        fill=color,
+                    )
+
+            for ox, oy in _house_border:
+                _stamp(ox, oy, (100, 75, 0))
+            for ox, oy in _HOUSE_FILL:
+                _stamp(ox, oy, (255, 215, 0))
+            for ox, oy in _HOUSE_DOOR:
+                _stamp(ox, oy, (100, 75, 0))
+
     if show_labels and src_centroids:
         label_px = max(8, round(label_size * render_scale))
         try:
@@ -770,7 +817,7 @@ def render_map_png(
             label = map_data.room_names[rid].upper()
             if not label:
                 continue
-            ox, oy = _to_out(vals[0] // vals[2], vals[1] // vals[2])
+            ox, oy = _upright(*_to_out(vals[0] // vals[2], vals[1] // vals[2]))
             bbox = draw.textbbox((0, 0), label, font=font)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
@@ -792,7 +839,7 @@ def render_map_png(
     # Step 7 — robot marker + status badge
     # ------------------------------------------------------------------
     if robot_pixel is not None:
-        orx, ory = _to_out(robot_pixel[0], robot_pixel[1])
+        orx, ory = _upright(*_to_out(robot_pixel[0], robot_pixel[1]))
         icon = style.get("robot_icon")
         if robot_style == "svg" and icon:
             glyph = Image.open(io.BytesIO(icon)).convert("RGBA")
@@ -803,8 +850,13 @@ def render_map_png(
             img = base
             draw = ImageDraw.Draw(img)
         elif robot_style == "dot":
-            _circle(orx, ory, 7.0 * render_scale, (255, 255, 255))
-            _circle(orx, ory, 4.5 * render_scale, (20, 20, 20))
+            robot_icon = _bundled_icon("t2280_map_robot.png")
+            if robot_icon is not None:
+                img = _blit_icon(img, robot_icon, orx, ory, max(12, round(22 * render_scale)))
+                draw = ImageDraw.Draw(img)
+            else:
+                _circle(orx, ory, 7.0 * render_scale, (255, 255, 255))
+                _circle(orx, ory, 4.5 * render_scale, (20, 20, 20))
         else:  # "googly" (default)
             _circle(orx, ory, 7.0 * render_scale, (160, 70, 0))
             _circle(orx, ory, 6.0 * render_scale, (255, 140, 0))
@@ -821,12 +873,6 @@ def render_map_png(
                 bpx = bx + round(ox2 * render_scale)
                 bpy = by + round(oy2 * render_scale)
                 _circle(bpx, bpy, max(0.6, 0.45 * render_scale), (20, 20, 20))
-
-    # ------------------------------------------------------------------
-    # Step 8 — optional rotation + encode PNG
-    # ------------------------------------------------------------------
-    if rotation:
-        img = _rotate_image(img, rotation)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=False, compress_level=3)
