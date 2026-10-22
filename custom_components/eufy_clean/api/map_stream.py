@@ -1,6 +1,7 @@
 """Parse biz/ MQTT protocol-41 map stream messages and render PNG."""
 from __future__ import annotations
 
+import base64
 import io
 import json
 import logging
@@ -1622,6 +1623,70 @@ class MapStreamHandler:
         placed = _pose_on_map(map_data, map_data.dock_cm[0], map_data.dock_cm[1])
         if placed is not None:
             self._dock_pixel = placed[0]
+
+    def export_map_snapshot(self) -> dict[str, Any] | None:
+        """JSON-safe copy of the floor, so a restart can show it before MQTT."""
+        map_data = self.map_data
+        if map_data is None:
+            return None
+        return {
+            "width": map_data.width,
+            "height": map_data.height,
+            "origin_x": map_data.origin_x,
+            "origin_y": map_data.origin_y,
+            "resolution": map_data.resolution,
+            "raw_pixels": base64.b64encode(map_data.raw_pixels).decode(),
+            "room_pixels": (
+                base64.b64encode(map_data.room_pixels).decode()
+                if map_data.room_pixels
+                else None
+            ),
+            "room_outline_width": map_data.room_outline_width,
+            "room_outline_height": map_data.room_outline_height,
+            "room_outline_origin_x": map_data.room_outline_origin_x,
+            "room_outline_origin_y": map_data.room_outline_origin_y,
+            "room_names": {str(k): v for k, v in map_data.room_names.items()},
+            "virtual_walls": map_data.virtual_walls,
+            "forbidden_zones": map_data.forbidden_zones,
+            "ban_mop_zones": map_data.ban_mop_zones,
+            "dock_cm": list(map_data.dock_cm) if map_data.dock_cm else None,
+            "robot_pixel": list(self._robot_pixel) if self._robot_pixel else None,
+        }
+
+    def restore_map_snapshot(self, payload: dict[str, Any]) -> bool:
+        """Load a saved floor and render it. Returns False when the payload is unusable."""
+        try:
+            raw = base64.b64decode(payload["raw_pixels"])
+            room_raw = payload.get("room_pixels")
+            dock = payload.get("dock_cm")
+            map_data = MapData(
+                raw_pixels=raw,
+                width=int(payload["width"]),
+                height=int(payload["height"]),
+                origin_x=int(payload.get("origin_x", 0)),
+                origin_y=int(payload.get("origin_y", 0)),
+                resolution=int(payload.get("resolution") or 5),
+                room_pixels=base64.b64decode(room_raw) if room_raw else None,
+                room_outline_width=int(payload.get("room_outline_width") or 0),
+                room_outline_height=int(payload.get("room_outline_height") or 0),
+                room_outline_origin_x=int(payload.get("room_outline_origin_x") or 0),
+                room_outline_origin_y=int(payload.get("room_outline_origin_y") or 0),
+                room_names={
+                    int(k): str(v) for k, v in (payload.get("room_names") or {}).items()
+                },
+                virtual_walls=payload.get("virtual_walls") or [],
+                forbidden_zones=payload.get("forbidden_zones") or [],
+                ban_mop_zones=payload.get("ban_mop_zones") or [],
+                dock_cm=(int(dock[0]), int(dock[1])) if dock else None,
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        robot = payload.get("robot_pixel")
+        self._robot_pixel = (int(robot[0]), int(robot[1])) if robot else None
+        self.map_data = map_data
+        self._place_dock(map_data)
+        self._render()
+        return self.map_image is not None
 
     def restricted_zone_counts(self) -> dict[str, int]:
         """Return counts of virtual walls and zone polygons."""

@@ -208,6 +208,9 @@ class EufyCleanMapCamera(Camera):
         await super().async_added_to_hass()
         self._coordinator.async_add_listener(self._handle_coordinator_update)
         self._device.add_update_callback(self._device_update_callback)
+        save_map = getattr(self._device, "_save_map_snapshot", None)
+        if save_map is not None:
+            save_map()
 
     async def async_will_remove_from_hass(self) -> None:
         """When entity is removed from hass."""

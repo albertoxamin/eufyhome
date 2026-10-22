@@ -9,6 +9,7 @@ from typing import Any
 import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import EufyCleanApi
@@ -118,6 +119,11 @@ class EufyCleanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         map_rotation=map_rotation,
                     )
                     device.apply_render_options(self.entry.options)
+                    store = Store(self.hass, 1, f"{DOMAIN}_map_{device_id}")
+                    device.attach_map_store(store)
+                    saved = await store.async_load()
+                    if isinstance(saved, dict):
+                        device.restore_map_snapshot(saved)
                 else:
                     device = CloudDevice(
                         device_config=device_data,

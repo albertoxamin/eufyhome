@@ -84,6 +84,16 @@ def main() -> None:
     assert _rotated_point(2, 5, 10, 20, 90) == (14, 2)
     assert _rotated_point(2, 5, 10, 20, 180) == (7, 14)
     assert _rotated_point(2, 5, 10, 20, 270) == (5, 7)
+    remembered = MapStreamHandler()
+    remembered.map_data = house
+    remembered._robot_pixel = (68, 184)
+    snapshot = remembered.export_map_snapshot()
+    assert snapshot is not None
+    restored = MapStreamHandler()
+    assert restored.restore_map_snapshot(snapshot) is True
+    assert restored.map_data is not None
+    assert restored.map_data.width == house.width
+    assert restored.robot_pixel == (68, 184)
     print("ok", live.robot_pixel, "dock", live._dock_pixel)
 
 

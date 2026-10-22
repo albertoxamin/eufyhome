@@ -685,6 +685,7 @@ class MqttDevice(BaseDevice):
         self._map_requested = False
         self._empty_room_polls = 0
         self._last_work_status: str | None = None
+        self._map_store = None
 
     def map_data(self, dps: dict[str, Any]) -> None:
         """Map DPS data and merge any room list into the live map handler."""
@@ -702,6 +703,32 @@ class MqttDevice(BaseDevice):
     def get_map_image(self) -> bytes | None:
         """Return rendered map PNG from the MQTT biz/ stream."""
         return self._map_handler.map_image
+
+    def attach_map_store(self, store) -> None:
+        """Remember where to keep the last floor across restarts."""
+        self._map_store = store
+
+    def restore_map_snapshot(self, payload: dict[str, Any]) -> bool:
+        """Show a previously saved floor before the vacuum answers."""
+        return self._map_handler.restore_map_snapshot(payload)
+
+    def _save_map_snapshot(self) -> None:
+        store = self._map_store
+        if store is None or self._map_handler.map_data is None:
+            return
+        store.async_delay_save(self._map_handler.export_map_snapshot)
+
+    def _notify_update(self) -> None:
+        """Save the floor on the event loop, then notify entities."""
+        loop = self._update_loop
+        if loop is not None:
+            try:
+                on_loop = asyncio.get_running_loop() is loop
+            except RuntimeError:
+                on_loop = False
+            if on_loop:
+                self._save_map_snapshot()
+        super()._notify_update()
 
     def has_map_stream(self) -> bool:
         """Return True when map stream data has been received."""
@@ -885,14 +912,10 @@ class MqttDevice(BaseDevice):
     async def update(self) -> None:
         """Update device data via HTTP API."""
         work_status = self.get_work_status()
-        if work_status in _ACTIVE_MAP_STATUSES:
+        # Ask until a floor exists. A single request at startup is easy to miss,
+        # and saved room names used to stop the retries.
+        if work_status in _ACTIVE_MAP_STATUSES or not self.has_map_stream():
             await self.request_map_download()
-        elif not self.get_rooms():
-            self._empty_room_polls += 1
-            if self._empty_room_polls % 4 == 0:
-                await self.request_map_download()
-        else:
-            self._empty_room_polls = 0
 
         headers = {
             "user-agent": "EufyHome-Android-3.1.3-753",
