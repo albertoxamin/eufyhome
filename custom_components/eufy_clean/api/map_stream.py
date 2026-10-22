@@ -641,7 +641,8 @@ def render_map_png(
     # ------------------------------------------------------------------
     # Step 5 — cleaning trail / streamed path
     # ------------------------------------------------------------------
-    _MAX_TRAIL_JUMP_SQ = 400 * 400
+    # About 1.5 m at 5 cm/pixel. Longer gaps are a new segment, not a line across the map.
+    _MAX_TRAIL_JUMP_SQ = 30 * 30
 
     def _draw_path_segments(
         raw_pts: list[tuple[int, int]],
@@ -711,12 +712,15 @@ def render_map_png(
     if cleaning_path:
         path_pixels: list[tuple[int, int]] = []
         path_breaks: list[bool] = []
+        start_new = False
         for x_cm, y_cm, break_before in cleaning_path:
             px = _pose_to_pixel(map_data, x_cm, y_cm)
             if px is None:
+                start_new = True
                 continue
             path_pixels.append(px)
-            path_breaks.append(break_before)
+            path_breaks.append(break_before or start_new)
+            start_new = False
         _draw_path_segments(path_pixels, path_breaks)
 
     if robot_trail:
@@ -1117,8 +1121,9 @@ def _pose_to_pixel(
     py = round((y_cm - map_data.origin_y) / res)
     if map_data.width <= 0 or map_data.height <= 0:
         return None
-    px = max(0, min(map_data.width - 1, px))
-    py = max(0, min(map_data.height - 1, py))
+    # Off-map poses used to be pinned to the border, which drew a fan of lines.
+    if not (0 <= px < map_data.width and 0 <= py < map_data.height):
+        return None
     return px, py
 
 
