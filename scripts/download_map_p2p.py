@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import importlib.util
 import json
 import os
 import sys
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +38,35 @@ def _load_module(name: str, path: Path):
     sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def _write_map_source(path: Path, map_handler) -> None:
+    """Save decoded pixels so the HTML preview can re-render this floor."""
+    md = map_handler.map_data
+    if md is None:
+        return
+    payload = {
+        "width": md.width,
+        "height": md.height,
+        "origin_x": md.origin_x,
+        "origin_y": md.origin_y,
+        "resolution": md.resolution,
+        "raw_pixels": base64.b64encode(md.raw_pixels).decode(),
+        "room_pixels": base64.b64encode(md.room_pixels).decode() if md.room_pixels else None,
+        "room_outline_width": md.room_outline_width,
+        "room_outline_height": md.room_outline_height,
+        "room_outline_origin_x": md.room_outline_origin_x,
+        "room_outline_origin_y": md.room_outline_origin_y,
+        "room_names": {str(k): v for k, v in md.room_names.items()},
+        "virtual_walls": md.virtual_walls,
+        "forbidden_zones": md.forbidden_zones,
+        "ban_mop_zones": md.ban_mop_zones,
+        "robot_pixel": map_handler._robot_pixel,
+        "robot_trail": map_handler._robot_trail[-400:],
+        "dock_pixel": map_handler._dock_pixel,
+        "cleaning_path": map_handler._cleaning_path[-400:],
+    }
+    path.write_text(json.dumps(payload))
 
 
 def load_credentials() -> tuple[str, str]:
@@ -80,9 +112,83 @@ def bootstrap_eufy_modules() -> None:
     _load_module("eufy_clean.api.eufy_api", COMPONENT_ROOT / "api" / "eufy_api.py")
 
 
+_LIVE_PAGE = """<!doctype html>
+<meta charset="utf-8">
+<title>Live map</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font: 14px/1.4 sans-serif; }
+  img { display: block; max-width: 100%; height: auto; image-rendering: pixelated; }
+  #status { padding: 8px 12px; }
+</style>
+<img id="map" alt="Live map">
+<div id="status">waiting for the map</div>
+<script>
+async function tick() {
+  const img = document.getElementById("map");
+  const res = await fetch("/map.png?t=" + Date.now());
+  if (res.ok) {
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const old = img.src;
+    img.src = url;
+    if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+  }
+  const status = await fetch("/status");
+  if (status.ok) document.getElementById("status").textContent = await status.text();
+}
+setInterval(tick, 1000);
+tick();
+</script>
+"""
+
+
+def serve_live_map(map_handler, port: int) -> None:
+    """Serve the latest rendered map. The image refreshes once a second."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0]
+            if path in ("/", "/index.html"):
+                body = _LIVE_PAGE.encode()
+                kind = "text/html; charset=utf-8"
+            elif path == "/status":
+                body = map_handler.status_text().encode()
+                kind = "text/plain; charset=utf-8"
+            elif path == "/map.png":
+                body = map_handler.map_image or b""
+                if not body:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                kind = "image/png"
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"Live map: http://127.0.0.1:{port}/")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Download map via MQTT P2P stream")
     parser.add_argument("--timeout", type=int, default=90, help="Seconds to wait for map")
+    parser.add_argument(
+        "--hold",
+        type=int,
+        default=0,
+        help="Seconds to keep listening after the map arrives, so path frames can land",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -90,6 +196,12 @@ async def main() -> None:
         help="Output PNG path",
     )
     parser.add_argument("--map-id", type=int, default=0, help="Optional cloud map id for MAP_GET_ONE")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Keep the MQTT stream open and serve a page that refreshes the map",
+    )
+    parser.add_argument("--port", type=int, default=8766, help="Port for --live")
     parser.add_argument(
         "--rotation",
         type=int,
@@ -107,7 +219,14 @@ async def main() -> None:
 
     from eufy_clean.api.eufy_api import EufyCleanApi
     from eufy_clean.api.map_commands import build_map_get_all_command, build_map_get_one_command
-    from eufy_clean.api.map_stream import MapStreamHandler
+    from eufy_clean.api.map_stream import (
+        MapStreamHandler,
+        _pose_on_map,
+        parse_biz_protocol41,
+        try_decode_as_dynamic_data,
+        try_extract_metadata_channels,
+        try_extract_path_points,
+    )
 
     print("Logging in...")
     api = EufyCleanApi(username=username, password=password)
@@ -145,6 +264,9 @@ async def main() -> None:
     map_handler = MapStreamHandler(rotation=args.rotation)
     map_received = asyncio.Event()
     biz_count = 0
+    last_status = ""
+    if args.live:
+        serve_live_map(map_handler, args.port)
 
     def send_dps_command(dps_data: dict) -> None:
         payload_inner = json.dumps(
@@ -192,9 +314,28 @@ async def main() -> None:
             print(f"MQTT connect failed: {reason_code}")
 
     def on_message(client, userdata, msg):
-        nonlocal biz_count
+        nonlocal biz_count, last_status
+        try:
+            _on_biz(msg)
+        except Exception as exc:
+            print(f"  frame error: {exc}")
+
+    def _on_biz(msg) -> None:
+        nonlocal biz_count, last_status
         if msg.topic == topic_biz:
             biz_count += 1
+            parsed = parse_biz_protocol41(msg.payload)
+            if parsed is not None and len(parsed[1]) < 800:
+                channel_id, hex_data = parsed
+                channels = try_extract_metadata_channels(hex_data)
+                if channels:
+                    print(f"    channels {channels}")
+                pose = try_decode_as_dynamic_data(hex_data)
+                path_pts = try_extract_path_points(hex_data)
+                if pose:
+                    md = map_handler.map_data
+                    placed = _pose_on_map(md, pose[0], pose[1]) if md is not None else None
+                    print(f"    pose {pose[0]},{pose[1]} -> {placed}")
             updated = map_handler.handle_biz_payload(msg.payload)
             if map_handler.map_data:
                 md = map_handler.map_data
@@ -222,6 +363,10 @@ async def main() -> None:
                 )
             if map_handler.map_image:
                 map_received.set()
+            status = map_handler.status_text() if map_handler.map_data else ""
+            if status and status != last_status:
+                last_status = status
+                print(f"  {status}")
 
     client = mqtt.Client(
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -249,15 +394,25 @@ async def main() -> None:
     client.connect(endpoint, 8883, keepalive=60)
     client.loop_start()
 
-    print(f"Waiting up to {args.timeout}s for map stream...")
-    print("(Tip: open the map in the Eufy app or start cleaning to trigger the stream.)")
+    if args.live:
+        print("Live view stays up. Open the map in the Eufy app so pose frames arrive.")
+    else:
+        print(f"Waiting up to {args.timeout}s for map stream...")
+        print("(Tip: open the map in the Eufy app or start cleaning to trigger the stream.)")
 
     deadline = time.monotonic() + args.timeout
     request_interval = 15.0
     last_request = time.monotonic()
+    hold_until = None
 
-    while time.monotonic() < deadline:
-        if map_received.is_set():
+    while args.live or time.monotonic() < deadline:
+        if map_received.is_set() and hold_until is None and not args.live:
+            hold_until = time.monotonic() + args.hold
+            if args.hold:
+                print(f"Map arrived. Listening {args.hold}s more for the live path...")
+        if not args.live and hold_until is not None and time.monotonic() >= hold_until:
+            break
+        if not args.live and map_received.is_set() and args.hold == 0:
             break
         if time.monotonic() - last_request >= request_interval:
             cmd = (
@@ -274,6 +429,9 @@ async def main() -> None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(map_handler.map_image or b"")
         print(f"Saved map to {args.output} ({len(map_handler.map_image or b'')} bytes)")
+        source = args.output.with_name("map_source.json")
+        _write_map_source(source, map_handler)
+        print(f"Saved map source to {source}")
     else:
         print("Timed out waiting for map pixels.")
         print(f"  biz/ messages received: {biz_count}")
@@ -317,7 +475,8 @@ async def main() -> None:
         print(
             f"Path data: embedded pv0={pv0} pv3={pv3}, "
             f"streamed_path_pts={len(map_handler._cleaning_path)}, "
-            f"robot_trail={len(map_handler._robot_trail)}"
+            f"robot_trail={len(map_handler._robot_trail)}, "
+            f"robot_pixel={map_handler._robot_pixel}"
         )
 
     client.loop_stop()

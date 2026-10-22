@@ -283,6 +283,7 @@ class MapData:
     virtual_walls: list[tuple[tuple[int, int], tuple[int, int]]] = field(default_factory=list)
     forbidden_zones: list[list[tuple[int, int]]] = field(default_factory=list)
     ban_mop_zones: list[list[tuple[int, int]]] = field(default_factory=list)
+    dock_cm: tuple[int, int] | None = None
 
     def has_restricted_zones(self) -> bool:
         """Return True when any no-go, no-mop, or virtual-wall data is present."""
@@ -336,12 +337,26 @@ class RestrictedZoneLayers:
         )
 
 
+def _dock_cm_from_info(info: Any) -> tuple[int, int] | None:
+    """First charger pose on a MapInfo, in the same centimetres as the robot."""
+    for pose in info.docks:
+        if pose.x or pose.y:
+            return pose.x, pose.y
+    for dock in info.docks_v2:
+        pose = dock.pose
+        if pose.x or pose.y:
+            return pose.x, pose.y
+    return None
+
+
 def _parse_restricted_zone(rz: Any) -> RestrictedZoneLayers:
     layers = RestrictedZoneLayers()
     for wall in rz.virtual_walls:
-        layers.virtual_walls.append(
-            ((wall.p0.x, wall.p0.y), (wall.p1.x, wall.p1.y))
-        )
+        segment = ((wall.p0.x, wall.p0.y), (wall.p1.x, wall.p1.y))
+        # A pose frame parses as a wall at the origin. That is not a wall.
+        if segment == ((0, 0), (0, 0)):
+            continue
+        layers.virtual_walls.append(segment)
     for zone in rz.forbidden_zones:
         layers.forbidden_zones.append(_quad_points(zone))
     for zone in rz.ban_mop_zones:
@@ -619,24 +634,28 @@ def render_map_png(
     # ------------------------------------------------------------------
     if dock_pixel is not None:
         dx, dy = _to_out(dock_pixel[0], dock_pixel[1])
+        cell = max(1, round(render_scale))
         _house_border = {
             (nx, ny)
             for ox, oy in _HOUSE_FILL
             for nx, ny in ((ox + ddx, oy + ddy) for ddx in (-1, 0, 1) for ddy in (-1, 0, 1))
             if (nx, ny) not in _HOUSE_FILL
         }
+
+        def _stamp(ox: int, oy: int, color: tuple[int, int, int]) -> None:
+            bpx, bpy = dx + ox * cell, dy + oy * cell
+            if 0 <= bpx < out_w and 0 <= bpy < out_h:
+                draw.rectangle(
+                    [bpx, bpy, bpx + cell - 1, bpy + cell - 1],
+                    fill=color,
+                )
+
         for ox, oy in _house_border:
-            bpx, bpy = dx + ox, dy + oy
-            if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(100, 75, 0))
+            _stamp(ox, oy, (100, 75, 0))
         for ox, oy in _HOUSE_FILL:
-            bpx, bpy = dx + ox, dy + oy
-            if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(255, 215, 0))
+            _stamp(ox, oy, (255, 215, 0))
         for ox, oy in _HOUSE_DOOR:
-            bpx, bpy = dx + ox, dy + oy
-            if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(100, 75, 0))
+            _stamp(ox, oy, (100, 75, 0))
 
     # ------------------------------------------------------------------
     # Step 5 — cleaning trail / streamed path
@@ -784,8 +803,8 @@ def render_map_png(
             img = base
             draw = ImageDraw.Draw(img)
         elif robot_style == "dot":
-            _circle(orx, ory, 5.0 * render_scale, (20, 20, 20))
-            _circle(orx, ory, 4.0 * render_scale, (55, 55, 55))
+            _circle(orx, ory, 7.0 * render_scale, (255, 255, 255))
+            _circle(orx, ory, 4.5 * render_scale, (20, 20, 20))
         else:  # "googly" (default)
             _circle(orx, ory, 7.0 * render_scale, (160, 70, 0))
             _circle(orx, ory, 6.0 * render_scale, (255, 140, 0))
@@ -906,6 +925,7 @@ def try_extract_map_data(hex_data: str) -> MapData | None:
         virtual_walls=virtual_walls,
         forbidden_zones=forbidden_zones,
         ban_mop_zones=ban_mop_zones,
+        dock_cm=_dock_cm_from_info(map_msg.info),
     )
 
 
@@ -1003,6 +1023,36 @@ def _decode_path_xy(xy: int) -> tuple[int, int]:
     return x, y
 
 
+def _exact_path_point(value: bytes) -> tuple[int, int] | None:
+    """Return (xy, flags) only when the bytes are a PathPoint and nothing else.
+
+    A loose protobuf parse treats any message whose first field is a number as a
+    path point. Those numbers are not coordinates, and one of them landed in the
+    living room.
+    """
+    if not value or len(value) > 12:
+        return None
+    from .proto_utils import decode_protobuf_field
+
+    xy: int | None = None
+    flags = 0
+    pos = 0
+    while pos < len(value):
+        start = pos
+        field_num, wire_type, field_value, pos = decode_protobuf_field(value, pos)
+        if field_num is None or pos <= start or wire_type != 0 or not isinstance(field_value, int):
+            return None
+        if field_num == 1 and xy is None:
+            xy = field_value
+        elif field_num == 2:
+            flags = field_value
+        else:
+            return None
+    if xy is None:
+        return None
+    return xy, flags
+
+
 def _append_path_point(
     points: list[tuple[int, int, bool]],
     xy: int,
@@ -1025,18 +1075,16 @@ def _collect_path_points(data: bytes, out: list[tuple[int, int, bool]]) -> None:
 
     pos = 0
     while pos < len(data):
+        start = pos
         field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
-        if field_num is None:
+        if field_num is None or pos <= start:
             break
-        if wire_type != 2 or not isinstance(value, bytes):
+        if wire_type != 2 or not isinstance(value, bytes) or len(value) < 2:
             continue
-        try:
-            pp = stream_pb2.PathPoint().FromString(value)
-            if pp.xy or pp.flags:
-                _append_path_point(out, pp.xy, pp.flags)
-                continue
-        except Exception:
-            pass
+        exact = _exact_path_point(value)
+        if exact is not None:
+            _append_path_point(out, exact[0], exact[1])
+            continue
         if len(value) >= 4:
             _collect_path_points(value, out)
 
@@ -1045,11 +1093,9 @@ def try_extract_path_points(hex_data: str) -> list[tuple[int, int, bool]] | None
     """Decode a biz/ path frame. Returns [(x_cm, y_cm, break_before), ...]."""
     points: list[tuple[int, int, bool]] = []
     for proto_bytes in _hex_proto_candidates(hex_data):
-        try:
-            pp = stream_pb2.PathPoint().FromString(proto_bytes)
-            _append_path_point(points, pp.xy, pp.flags)
-        except Exception:
-            pass
+        exact = _exact_path_point(proto_bytes)
+        if exact is not None:
+            _append_path_point(points, exact[0], exact[1])
         _collect_path_points(proto_bytes, points)
     return points or None
 
@@ -1057,11 +1103,21 @@ def try_extract_path_points(hex_data: str) -> list[tuple[int, int, bool]] | None
 def try_decode_as_dynamic_data(hex_data: str) -> tuple[int, int, int] | None:
     """Decode channel as DynamicData robot pose. Returns (x_cm, y_cm, theta_crad) or None."""
     for proto_bytes in _hex_proto_candidates(hex_data):
+        if len(proto_bytes) > 64:
+            continue
         try:
             dyn = stream_pb2.DynamicData().FromString(proto_bytes)
             pose = dyn.cur_pose
-            if pose.x != 0 or pose.y != 0:
-                return pose.x, pose.y, pose.theta
+            if pose.x == 0 and pose.y == 0:
+                continue
+            # Reject frames that merely start with a pose-shaped field.
+            clean = stream_pb2.DynamicData()
+            clean.cur_pose.x = pose.x
+            clean.cur_pose.y = pose.y
+            clean.cur_pose.theta = pose.theta
+            if clean.SerializeToString() != proto_bytes:
+                continue
+            return pose.x, pose.y, pose.theta
         except Exception:
             pass
     return None
@@ -1127,6 +1183,28 @@ def _pose_to_pixel(
     return px, py
 
 
+def _pose_on_map(
+    map_data: MapData, x: int, y: int
+) -> tuple[tuple[int, int], int, int] | None:
+    """Return (pixel, x_cm, y_cm). Pose may be centimetres, or millimetres when large."""
+    pixel = _pose_to_pixel(map_data, x, y)
+    if pixel is not None:
+        return pixel, x, y
+    span = max(abs(x), abs(y))
+    # A house is a few thousand cm. Larger numbers are millimetres.
+    if span >= 5000:
+        sx, sy = int(round(x / 10)), int(round(y / 10))
+        pixel = _pose_to_pixel(map_data, sx, sy)
+        if pixel is not None:
+            return pixel, sx, sy
+    if span >= 50000:
+        sx, sy = int(round(x / 100)), int(round(y / 100))
+        pixel = _pose_to_pixel(map_data, sx, sy)
+        if pixel is not None:
+            return pixel, sx, sy
+    return None
+
+
 class MapStreamHandler:
     """Accumulates map stream frames from biz/ MQTT protocol-41 messages."""
 
@@ -1136,6 +1214,8 @@ class MapStreamHandler:
         self.map_channel_id: int | None = None
         self.last_seen_maps: dict[int, str] = {}
         self._robot_pixel: tuple[int, int] | None = None
+        self._pose_cm: tuple[int, int] | None = None
+        self._pending_pose: tuple[int, int] | None = None
         self._robot_trail: list[tuple[int, int]] = []
         self._cleaning_path: list[tuple[int, int, bool]] = []
         self._dock_pixel: tuple[int, int] | None = None
@@ -1161,6 +1241,8 @@ class MapStreamHandler:
         self._robot_trail.clear()
         self._cleaning_path.clear()
         self._robot_pixel = None
+        self._pose_cm = None
+        self._pending_pose = None
 
     def _append_trail_point(self, robot_px: tuple[int, int]) -> None:
         """Append a robot pose to the live trail, filtering teleports."""
@@ -1175,23 +1257,26 @@ class MapStreamHandler:
         else:
             max_step = max(self.map_data.width, self.map_data.height) // 10
             dist_sq = dx * dx + dy * dy
-            if 9 <= dist_sq <= max_step * max_step:
+            if 0 < dist_sq <= max_step * max_step:
                 self._robot_trail.append(robot_px)
         if len(self._robot_trail) > _MAX_TRAIL_POINTS:
             self._robot_trail = self._robot_trail[-_MAX_TRAIL_POINTS :]
 
     def _ingest_pose(self, x_cm: int, y_cm: int) -> bool:
         """Update robot pixel/trail from a world pose. Returns True when map image changed."""
+        self._pending_pose = (x_cm, y_cm)
         if self.map_data is None:
             return False
-        robot_px = _pose_to_pixel(self.map_data, x_cm, y_cm)
-        if robot_px is None:
+        placed = _pose_on_map(self.map_data, x_cm, y_cm)
+        if placed is None:
             return False
-        trail_updated = False
-        if self._tracking_active:
-            before = len(self._robot_trail)
-            self._append_trail_point(robot_px)
-            trail_updated = len(self._robot_trail) != before
+        robot_px, x_cm, y_cm = placed
+        self._pose_cm = (x_cm, y_cm)
+        if any(abs(x) > 4000 or abs(y) > 4000 for x, y, _break in self._cleaning_path):
+            self._cleaning_path.clear()
+        before = len(self._robot_trail)
+        self._append_trail_point(robot_px)
+        trail_updated = len(self._robot_trail) != before
         changed_pixel = robot_px != self._robot_pixel
         self._robot_pixel = robot_px
         now = time.monotonic()
@@ -1205,6 +1290,14 @@ class MapStreamHandler:
         """Merge streamed path points and re-render when possible."""
         if not path_pts:
             return False
+        if self.map_data is not None:
+            on_map = sum(
+                1 for x_cm, y_cm, _break in path_pts
+                if _pose_to_pixel(self.map_data, x_cm, y_cm) is not None
+            )
+            # One in-bounds number inside a frame of garbage is not the robot.
+            if on_map == 0 or on_map * 2 < len(path_pts):
+                return False
         self._cleaning_path.extend(path_pts)
         if len(self._cleaning_path) > _MAX_TRAIL_POINTS:
             self._cleaning_path = self._cleaning_path[-_MAX_TRAIL_POINTS :]
@@ -1339,6 +1432,11 @@ class MapStreamHandler:
                 self.map_channel_id = self.map_channel_id or map_id
             return False
 
+        # Pose frames are short, and a loose zone parse turns them into a wall at (0, 0).
+        if len(hex_data) < 80:
+            if pose := try_decode_as_dynamic_data(hex_data):
+                return self._ingest_pose(pose[0], pose[1])
+
         if names := try_extract_room_params(hex_data):
             return self._merge_room_params(names)
 
@@ -1403,10 +1501,18 @@ class MapStreamHandler:
             map_data.virtual_walls = self.map_data.virtual_walls
             map_data.forbidden_zones = self.map_data.forbidden_zones
             map_data.ban_mop_zones = self.map_data.ban_mop_zones
+            if map_data.dock_cm is None:
+                map_data.dock_cm = self.map_data.dock_cm
 
         self._apply_pending_layers(map_data)
+        self._place_dock(map_data)
         self.map_data = map_data
-        self._render()
+        posed = False
+        if self._pending_pose is not None:
+            self._last_pose_render = 0.0
+            posed = self._ingest_pose(self._pending_pose[0], self._pending_pose[1])
+        if not posed:
+            self._render()
         return True
 
     def set_tracking_active(self, active: bool) -> None:
@@ -1444,6 +1550,32 @@ class MapStreamHandler:
     def robot_pixel(self) -> tuple[int, int] | None:
         """Last known robot position in map pixel coordinates."""
         return self._robot_pixel
+
+    def status_text(self) -> str:
+        """One line for the live map page."""
+        pixel = self._robot_pixel
+        pose = self._pose_cm
+        room = ""
+        if pixel is not None and self.map_data is not None:
+            rid, _sub = _room_mask_at(self.map_data, pixel[0], pixel[1])
+            room = self.get_room_names().get(rid, "")
+        pixel_text = f"{pixel[0]},{pixel[1]}" if pixel else "none"
+        pose_text = f"{pose[0]},{pose[1]} cm" if pose else "no pose yet"
+        dock = self._dock_pixel
+        dock_text = f"{dock[0]},{dock[1]}" if dock else "none"
+        return (
+            f"robot pixel {pixel_text} · pose {pose_text} · "
+            f"{room or 'room unknown'} · dock {dock_text} · "
+            f"path points {len(self._cleaning_path)}"
+        )
+
+    def _place_dock(self, map_data: MapData) -> None:
+        """Put the charger icon on the map pose, when that pose is on the floor."""
+        if map_data.dock_cm is None:
+            return
+        placed = _pose_on_map(map_data, map_data.dock_cm[0], map_data.dock_cm[1])
+        if placed is not None:
+            self._dock_pixel = placed[0]
 
     def restricted_zone_counts(self) -> dict[str, int]:
         """Return counts of virtual walls and zone polygons."""
