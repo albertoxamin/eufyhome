@@ -21,6 +21,16 @@ A Home Assistant custom integration for Eufy robot vacuums. This integration is 
   - Clean intensity: Standard, Deep Clean, Quick Clean
 - **Map camera** - View your vacuum's map as an image
 
+## Map
+
+![Floor map with room names, the dock, the robot, and a dashed path](docs/map.png)
+
+The camera shows the rooms, the dock, the robot, and the cleaning path. The last floor is kept and shown again after a restart.
+
+![Map options, with a live preview and color controls](docs/map-options.jpg)
+
+Open the integration options to change colors, rotation, icon size, path spacing, and path opacity. Choose Update preview to redraw the picture, then Save to keep that look on the camera.
+
 ## Supported Devices
 
 This integration supports a wide range of Eufy robot vacuums, including:
@@ -137,9 +147,11 @@ Room IDs are assigned by your vacuum when it maps your home. To find them:
 ### Camera Entity
 
 - **Map**: View your vacuum's floor map as an image (requires Pillow)
-- Room colors and labels appear when the device sends `RoomOutline` and `RoomParams` over the MQTT map stream (often included in a full map backup, or as separate biz/ frames)
-- No-go zones (red), no-mop zones (orange), and virtual walls are drawn when `RestrictedZone` data arrives on the biz/ stream or inside a `MapBackup`
-- Configure clockwise rotation (0/90/180/270°) under integration **Options** (default: 90°)
+- Room names stay upright when the map is rotated. The robot and dock use the device's map sprites
+- The cleaning path can be solid, dotted, or dashed, and its opacity can be lowered so the floor shows through
+- No-go zones (red), no-mop zones (orange), and virtual walls are drawn when that data arrives
+- Under integration **Options**: rotation, colors, icon size (0.01 to 2, default 0.5), path spacing, and path opacity (0 to 1, default 0.5)
+- The last floor is saved, so the picture is there after a restart. Home Assistant asks the vacuum again until a newer map arrives
 
 ## Troubleshooting
 
