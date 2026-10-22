@@ -10,6 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.controllers import BaseDevice
@@ -17,6 +18,10 @@ from .const import DOMAIN, EUFY_CLEAN_DEVICES, MANUFACTURER
 from .coordinator import EufyCleanDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _generic_room_name(name: str, room_id: int) -> bool:
+    return name.strip().lower() == f"room {room_id}"
 
 # Cleaning type options
 CLEAN_TYPE_OPTIONS = {
@@ -247,7 +252,10 @@ class EufyRoomSelect(
         super().__init__(coordinator)
         self._device = device
         self._attr_unique_id = f"{device.device_id}_clean_room"
+        self._rooms: dict[int, str] = {}
         self._room_options: dict[str, int] = {}
+        self._current_option: str | None = None
+        self._room_store: Store | None = None
         self._device_update_callback = self._handle_device_update
 
         model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
@@ -264,7 +272,16 @@ class EufyRoomSelect(
     async def async_added_to_hass(self) -> None:
         """Subscribe to live map/room updates from the device."""
         await super().async_added_to_hass()
+        self._room_store = Store(
+            self.hass, 1, f"{DOMAIN}_rooms_{self._device.device_id}"
+        )
+        saved = await self._room_store.async_load()
+        if isinstance(saved, dict) and saved:
+            self._rooms = {int(room_id): str(name) for room_id, name in saved.items()}
+            self._publish_room_options()
         self._device.add_update_callback(self._device_update_callback)
+        if self._refresh_room_options():
+            self.async_write_ha_state()
 
     async def async_will_remove_from_hass(self) -> None:
         """Unsubscribe from device updates."""
@@ -284,25 +301,61 @@ class EufyRoomSelect(
         return self._device.get_rooms()
 
     def _refresh_room_options(self) -> bool:
-        rooms = self._get_rooms()
-        options: dict[str, int] = {}
-        for room in rooms:
-            room_id = room.get("id")
-            if room_id is None:
+        incoming: list[tuple[int, str]] = []
+        for room in self._get_rooms():
+            raw_id = room.get("id")
+            if raw_id is None:
                 continue
-            name = room.get("name") or f"Room {room_id}"
-            options[f"{name} ({room_id})"] = int(room_id)
-        changed = options != self._room_options
-        self._room_options = options
-        self._attr_options = list(options.keys()) or ["No rooms discovered"]
-        return changed
+            room_id = int(raw_id)
+            name = str(room.get("name") or "").strip() or f"Room {room_id}"
+            incoming.append((room_id, name))
+        if not incoming:
+            return False
+        has_real_name = any(
+            not _generic_room_name(name, room_id) for room_id, name in incoming
+        )
+        updated = {} if has_real_name else dict(self._rooms)
+        for room_id, name in incoming:
+            previous = self._rooms.get(room_id)
+            if (
+                previous
+                and _generic_room_name(name, room_id)
+                and not _generic_room_name(previous, room_id)
+            ):
+                name = previous
+            updated[room_id] = name
+        if updated == self._rooms:
+            return False
+        self._rooms = updated
+        self._publish_room_options()
+        self._schedule_room_save()
+        return True
+
+    def _publish_room_options(self) -> None:
+        self._room_options = {
+            f"{name} ({room_id})": room_id
+            for room_id, name in sorted(self._rooms.items())
+        }
+        self._attr_options = list(self._room_options) or ["No rooms discovered"]
+        if self._current_option not in self._room_options:
+            self._current_option = next(iter(self._room_options), None)
+
+    def _schedule_room_save(self) -> None:
+        if self._room_store is None:
+            return
+        self._room_store.async_delay_save(
+            lambda: {str(room_id): name for room_id, name in self._rooms.items()},
+            1,
+        )
 
     @property
     def current_option(self) -> str | None:
         """Return the current option."""
         if not self._room_options:
             return "No rooms discovered"
-        return self._attr_options[0]
+        if self._current_option in self._room_options:
+            return self._current_option
+        return next(iter(self._room_options))
 
     async def async_select_option(self, option: str) -> None:
         """Start cleaning the selected room segment."""
@@ -310,6 +363,8 @@ class EufyRoomSelect(
         if room_id is None:
             _LOGGER.warning("Unknown room option selected: %s", option)
             return
+        self._current_option = option
+        self.async_write_ha_state()
         await self._device.clean_rooms([room_id])
         await self.coordinator.async_request_refresh()
 
