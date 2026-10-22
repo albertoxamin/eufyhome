@@ -777,7 +777,7 @@ def render_map_png(
         dx, dy = _upright(*_to_out(dock_pixel[0], dock_pixel[1]))
         station = _bundled_icon("t2280_map_station.png")
         if station is not None:
-            img = _blit_icon(img, station, dx, dy, max(16, round(36 * render_scale)))
+            img = _blit_icon(img, station, dx, dy, max(8, round(18 * render_scale)))
             draw = ImageDraw.Draw(img)
         else:
             cell = max(1, round(render_scale))
@@ -853,7 +853,7 @@ def render_map_png(
         elif robot_style == "dot":
             robot_icon = _bundled_icon("t2280_map_robot.png")
             if robot_icon is not None:
-                img = _blit_icon(img, robot_icon, orx, ory, max(12, round(22 * render_scale)))
+                img = _blit_icon(img, robot_icon, orx, ory, max(6, round(11 * render_scale)))
                 draw = ImageDraw.Draw(img)
             else:
                 _circle(orx, ory, 7.0 * render_scale, (255, 255, 255))
