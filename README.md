@@ -148,8 +148,8 @@ Room IDs are assigned by your vacuum when it maps your home. To find them:
 
 - **Map**: View your vacuum's floor map as an image (requires Pillow)
 - Room names stay upright when the map is rotated. The robot and dock use the device's map sprites
-- The cleaning path can be solid, dotted, or dashed, and its opacity can be lowered so the floor shows through
-- No-go zones (red), no-mop zones (orange), and virtual walls are drawn when that data arrives
+- While the robot is cleaning, the path is a solid line. Returning home and trips to a spot are dotted. Opacity can be lowered so the floor shows through
+- No-go zones are a half-transparent red fill with a dashed edge and a forbidden mark. No-mop zones are the same in orange, with a crossed-out water drop. Virtual walls stay a solid red line
 - Under integration **Options**: rotation, colors, icon size (0.01 to 2, default 0.5), path spacing, and path opacity (0 to 1, default 0.5)
 - The last floor is saved, so the picture is there after a restart. Home Assistant asks the vacuum again until a newer map arrives
 

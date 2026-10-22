@@ -878,6 +878,10 @@ class MqttDevice(BaseDevice):
             self._map_handler.clear_trail_on_new_session()
         self._last_work_status = work_status
         self._map_handler.set_tracking_active(work_status in _ACTIVE_MAP_STATUSES)
+        # Coverage stays a solid line. Returning home and trips to a target are dotted.
+        self._map_handler.set_path_travel(
+            work_status in {"go_home", "cruising", "remote_ctrl", "relocating"}
+        )
 
     def _on_message(self, client, userdata, msg):
         """Handle MQTT message."""

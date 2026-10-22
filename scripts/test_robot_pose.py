@@ -18,6 +18,9 @@ from eufy_clean.api.map_stream import (  # noqa: E402
     _dock_cm_from_info,
     _rotated_point,
     render_settings_from_options,
+    _append_path_point,
+    _floor_leaked_past_walls,
+    _map_pixel_value,
     _exact_path_point,
     _pose_on_map,
     stream_pb2,
@@ -99,6 +102,35 @@ def main() -> None:
     assert style["icon_scale"] == 0.5
     assert style["path_spacing"] == 1.0
     assert style["path_alpha"] == 0.5
+    clean_pts: list = []
+    travel_pts: list = []
+    # flags 0 is sweep. 0x4C is a transit type seen on go-to and return trips.
+    _append_path_point(clean_pts, 100, 0)
+    _append_path_point(travel_pts, 100, 0x4C)
+    assert clean_pts[0][3] is False
+    assert travel_pts[0][3] is True
+    # A floor ray outside a closed wall is hidden. The floor inside the wall stays.
+    side = 10
+    raw = bytearray((side * side + 3) // 4)
+
+    def put(x: int, y: int, pv: int) -> None:
+        i = y * side + x
+        raw[i >> 2] |= (pv & 3) << ((i & 3) * 2)
+
+    for x in range(2, 8):
+        put(x, 2, 1)
+        put(x, 7, 1)
+    for y in range(2, 8):
+        put(2, y, 1)
+        put(7, y, 1)
+    for y in range(3, 7):
+        for x in range(3, 7):
+            put(x, y, 2)
+    put(8, 4, 2)
+    put(9, 4, 2)
+    leaked = _floor_leaked_past_walls(bytes(raw), side, side, None, 0, 0, 0, 0)
+    assert leaked[4 * side + 8] and leaked[4 * side + 9]
+    assert not leaked[4 * side + 4]
     tight = render_settings_from_options({"icon_scale": 0.01, "path_spacing": 9})["style"]
     assert tight["icon_scale"] == 0.01
     assert tight["path_spacing"] == 8.0

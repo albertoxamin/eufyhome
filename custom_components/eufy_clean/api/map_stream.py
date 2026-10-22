@@ -184,6 +184,65 @@ def _is_valid_room_id(rid: int) -> bool:
     return 1 <= rid <= 31
 
 
+def _floor_leaked_past_walls(
+    raw: bytes,
+    width: int,
+    height: int,
+    room_px: bytes | None,
+    ro_w: int,
+    ro_h: int,
+    ro_dx: int,
+    ro_dy: int,
+) -> bytearray:
+    """Free-floor pixels outside the walls, reachable from the map edge.
+
+    Black wall pixels (and room floors) stop the walk, so a ray that slips
+    past the wall into the margin is hidden and the rooms stay.
+    """
+    leaked = bytearray(width * height)
+    seen = bytearray(width * height)
+    stack: list[tuple[int, int]] = []
+
+    def rid_at(x: int, y: int) -> int:
+        if not room_px or not ro_w or not ro_h:
+            return 0
+        rx, ry = x - ro_dx, y - ro_dy
+        if 0 <= rx < ro_w and 0 <= ry < ro_h:
+            return room_px[ry * ro_w + rx] >> 2
+        return 0
+
+    def push(x: int, y: int) -> None:
+        if not (0 <= x < width and 0 <= y < height):
+            return
+        i = y * width + x
+        if seen[i]:
+            return
+        seen[i] = 1
+        pv = _map_pixel_value(raw, width, x, y)
+        rid = rid_at(x, y)
+        if pv == 1 or rid == _ROOM_MASK_OBSTACLE or _is_valid_room_id(rid):
+            return
+        stack.append((x, y))
+        if pv in (2, 3):
+            leaked[i] = 1
+
+    if width <= 0 or height <= 0:
+        return leaked
+    for x in range(width):
+        push(x, 0)
+        push(x, height - 1)
+    for y in range(height):
+        push(0, y)
+        push(width - 1, y)
+    while stack:
+        x, y = stack.pop()
+        push(x + 1, y)
+        push(x - 1, y)
+        push(x, y + 1)
+        push(x, y - 1)
+    return leaked
+
+
 def _pixel_color_for_room_mask(
     pv: int,
     rid: int,
@@ -478,6 +537,41 @@ def _bundled_icon(filename: str) -> Image.Image | None:
     return cache[filename]
 
 
+def _dashed_polygon(
+    draw: ImageDraw.ImageDraw,
+    points: list[tuple[float, float]],
+    color: tuple[int, int, int, int],
+    dash: float,
+    gap: float,
+    width: int,
+) -> None:
+    """Stroke a closed polygon with a dashed outline."""
+    if len(points) < 2:
+        return
+    loop = points + [points[0]]
+    for (x0, y0), (x1, y1) in zip(loop, loop[1:]):
+        dist = math.hypot(x1 - x0, y1 - y0)
+        if dist < 1:
+            continue
+        ux, uy = (x1 - x0) / dist, (y1 - y0) / dist
+        pos = 0.0
+        while pos < dist:
+            run = min(dash, dist - pos)
+            draw.line(
+                [(x0 + ux * pos, y0 + uy * pos), (x0 + ux * (pos + run), y0 + uy * (pos + run))],
+                fill=color,
+                width=width,
+            )
+            pos += dash + gap
+
+
+def _tint_icon(icon: Image.Image, rgb: tuple[int, int, int]) -> Image.Image:
+    """Keep the sprite's shape and paint it in one solid color."""
+    tinted = Image.new("RGBA", icon.size, (*rgb, 255))
+    tinted.putalpha(icon.getchannel("A"))
+    return tinted
+
+
 def _blit_icon(img: Image.Image, icon: Image.Image, cx: int, cy: int, width: int) -> Image.Image:
     """Paste an RGBA sprite centered on a map pixel. Width is in output pixels."""
     width = max(1, width)
@@ -577,6 +671,21 @@ def render_map_png(
     # rid → [sum_src_x, sum_src_y, count]  (source pixel space)
     src_centroids: dict[int, list[int]] = {}
     _has_room_names = bool(room_px is not None and map_data.room_outline_width and map_data.room_names)
+    leaked_floor = _floor_leaked_past_walls(
+        raw,
+        width,
+        height,
+        room_px,
+        map_data.room_outline_width,
+        map_data.room_outline_height,
+        round((map_data.origin_x - map_data.room_outline_origin_x) / res)
+        if map_data.room_outline_width
+        else 0,
+        round((map_data.origin_y - map_data.room_outline_origin_y) / res)
+        if map_data.room_outline_height
+        else 0,
+    )
+    unknown = (pixel_colors or _PIXEL_COLORS)[0]
 
     if room_px is not None and map_data.room_outline_width and map_data.room_outline_height:
         _ro_w = map_data.room_outline_width
@@ -605,6 +714,8 @@ def render_map_png(
                     pixel_colors=pixel_colors,
                     room_palette=room_palette,
                 )
+                if leaked_floor[i]:
+                    color = unknown
                 colors.append(color)
                 if _has_room_names and rid > 0 and rid in map_data.room_names:
                     if rid not in src_centroids:
@@ -617,7 +728,10 @@ def render_map_png(
             byte_pos = i >> 2
             bit_pos = (i & 3) * 2
             pv = (raw[byte_pos] >> bit_pos) & 3 if byte_pos < len(raw) else 0
-            colors.append(pixel_colors.get(pv, (30, 30, 30)))
+            color = pixel_colors.get(pv, (30, 30, 30))
+            if leaked_floor[i]:
+                color = unknown
+            colors.append(color)
 
     # ------------------------------------------------------------------
     # Step 2 — create PIL image, Y-flip, scale
@@ -659,26 +773,42 @@ def render_map_png(
 
     # ------------------------------------------------------------------
     # Step 3 — restricted zones
+    # Filled at half alpha, dashed border, glyph placed after rotation.
     # ------------------------------------------------------------------
-    _BAN_MOP_COLOR = (255, 165, 0)
-    _ZONE_COLOR = (220, 50, 50)
+    _BAN_MOP_RGB = (255, 165, 0)
+    _ZONE_RGB = (220, 50, 50)
+    zone_marks: list[tuple[float, float, str, tuple[int, int, int]]] = []
 
     if show_zones:
-        for zone in map_data.ban_mop_zones:
-            pts = [_world_to_out(p[0], p[1]) for p in zone]
-            if len(pts) >= 2:
-                draw.polygon(pts, outline=_BAN_MOP_COLOR)
+        zone_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        zone_draw = ImageDraw.Draw(zone_layer)
+        dash = max(4.0, 8 * render_scale)
+        gap = max(3.0, 5 * render_scale)
 
-        for zone in map_data.forbidden_zones:
-            pts = [_world_to_out(p[0], p[1]) for p in zone]
-            if len(pts) >= 2:
-                draw.polygon(pts, outline=_ZONE_COLOR)
+        def _paint_zone(
+            zones: list[list[tuple[int, int]]],
+            rgb: tuple[int, int, int],
+            glyph: str,
+        ) -> None:
+            for zone in zones:
+                pts = [_world_to_out(p[0], p[1]) for p in zone]
+                if len(pts) < 3:
+                    continue
+                zone_draw.polygon(pts, fill=(*rgb, 128))
+                _dashed_polygon(zone_draw, pts, (*rgb, 255), dash, gap, max(1, round(render_scale)))
+                cx = sum(p[0] for p in pts) / len(pts)
+                cy = sum(p[1] for p in pts) / len(pts)
+                zone_marks.append((cx, cy, glyph, rgb))
 
+        _paint_zone(map_data.ban_mop_zones, _BAN_MOP_RGB, "nomop.png")
+        _paint_zone(map_data.forbidden_zones, _ZONE_RGB, "nogo.png")
         for wall in map_data.virtual_walls:
             draw.line(
                 [_world_to_out(wall[0][0], wall[0][1]), _world_to_out(wall[1][0], wall[1][1])],
-                fill=_ZONE_COLOR,
+                fill=_ZONE_RGB,
             )
+        img = Image.alpha_composite(img.convert("RGBA"), zone_layer).convert("RGB")
+        draw = ImageDraw.Draw(img)
 
     # ------------------------------------------------------------------
     # Step 4 — cleaning trail / streamed path
@@ -690,9 +820,18 @@ def render_map_png(
     # About 1.5 m at 5 cm/pixel. Longer gaps are a new segment, not a line across the map.
     _MAX_TRAIL_JUMP_SQ = 30 * 30
 
+    def _segment_style(travel: bool) -> str:
+        # The app draws coverage solid, and return / go-to trips dotted.
+        if path_style == "solid":
+            return "solid"
+        if path_style == "dotted":
+            return "dotted"
+        return "dotted" if travel else "solid"
+
     def _draw_path_segments(
         raw_pts: list[tuple[int, int]],
         breaks: list[bool] | None = None,
+        travels: list[bool] | None = None,
     ) -> None:
         if not raw_pts:
             return
@@ -704,20 +843,20 @@ def render_map_png(
         gap = max(1, round(max(stroke * 2, 7 * render_scale) * path_spacing))
         traveled = 0.0
 
-        def _stroke(p0: tuple[float, float], p1: tuple[float, float]) -> None:
+        def _stroke(p0: tuple[float, float], p1: tuple[float, float], style: str) -> None:
             nonlocal traveled
             x0, y0 = p0
             x1, y1 = p1
             dist = math.hypot(x1 - x0, y1 - y0)
             if dist < 0.5:
                 return
-            if path_style == "solid":
+            if style == "solid":
                 draw.line([p0, p1], fill=path_color, width=stroke)
                 traveled += dist
                 return
             ux, uy = (x1 - x0) / dist, (y1 - y0) / dist
             pos = 0.0
-            if path_style == "dotted":
+            if style == "dotted":
                 while pos <= dist:
                     _circle(x0 + ux * pos, y0 + uy * pos, max(0.6, stroke / 2), path_color)
                     pos += dot_step
@@ -753,24 +892,32 @@ def render_map_png(
             ddx = raw_pts[i + 1][0] - raw_pts[i][0]
             ddy = raw_pts[i + 1][1] - raw_pts[i][1]
             if ddx * ddx + ddy * ddy <= _MAX_TRAIL_JUMP_SQ:
-                _stroke(out_pts[i], out_pts[i + 1])
+                travel = bool(travels and i + 1 < len(travels) and travels[i + 1])
+                _stroke(out_pts[i], out_pts[i + 1], _segment_style(travel))
 
     if cleaning_path:
         path_pixels: list[tuple[int, int]] = []
         path_breaks: list[bool] = []
+        path_travel: list[bool] = []
         start_new = False
-        for x_cm, y_cm, break_before in cleaning_path:
+        for point in cleaning_path:
+            x_cm, y_cm = point[0], point[1]
+            break_before = bool(point[2]) if len(point) > 2 else False
+            travel = bool(point[3]) if len(point) > 3 else False
             px = _pose_to_pixel(map_data, x_cm, y_cm)
             if px is None:
                 start_new = True
                 continue
             path_pixels.append(px)
             path_breaks.append(break_before or start_new)
+            path_travel.append(travel)
             start_new = False
-        _draw_path_segments(path_pixels, path_breaks)
+        _draw_path_segments(path_pixels, path_breaks, path_travel)
 
     if robot_trail:
-        _draw_path_segments(list(robot_trail))
+        trail_pixels = [(point[0], point[1]) for point in robot_trail]
+        trail_travel = [bool(point[2]) if len(point) > 2 else False for point in robot_trail]
+        _draw_path_segments(trail_pixels, None, trail_travel)
 
     if show_embedded_path and map_data.raw_pixels:
         dot_r = max(1.0, scale * path_radius_scale)
@@ -793,6 +940,21 @@ def render_map_png(
 
     def _upright(x: int, y: int) -> tuple[int, int]:
         return _rotated_point(x, y, pre_w, pre_h, rotation)
+
+    for cx, cy, glyph_name, rgb in zone_marks:
+        glyph = _bundled_icon(glyph_name)
+        if glyph is None:
+            continue
+        mx, my = _upright(round(cx), round(cy))
+        img = _blit_icon(
+            img,
+            _tint_icon(glyph, rgb),
+            mx,
+            my,
+            max(8, round(16 * render_scale * icon_scale)),
+        )
+    if zone_marks:
+        draw = ImageDraw.Draw(img)
 
     if dock_pixel is not None:
         dx, dy = _upright(*_to_out(dock_pixel[0], dock_pixel[1]))
@@ -1139,7 +1301,10 @@ def _append_path_point(
     if x == 0 and y == 0:
         return
     break_before = bool((flags >> 4) & 1)
-    points.append((x, y, break_before))
+    # 0 sweep, 1 mop, 2 sweep+mop stay solid. Navigation, go-home, and
+    # other trip types (including the 0xC points seen on transits) are dotted.
+    travel = point_type not in (0, 1, 2)
+    points.append((x, y, break_before, travel))
 
 
 def _collect_path_points(data: bytes, out: list[tuple[int, int, bool]]) -> None:
@@ -1288,7 +1453,8 @@ class MapStreamHandler:
         self._robot_pixel: tuple[int, int] | None = None
         self._pose_cm: tuple[int, int] | None = None
         self._pending_pose: tuple[int, int] | None = None
-        self._robot_trail: list[tuple[int, int]] = []
+        self._robot_trail: list[tuple[int, int] | tuple[int, int, bool]] = []
+        self._path_travel = False
         self._cleaning_path: list[tuple[int, int, bool]] = []
         self._dock_pixel: tuple[int, int] | None = None
         self._tracking_active = False
@@ -1316,21 +1482,26 @@ class MapStreamHandler:
         self._pose_cm = None
         self._pending_pose = None
 
+    def set_path_travel(self, travel: bool) -> None:
+        """Mark new live-trail points as a return or go-to trip."""
+        self._path_travel = bool(travel)
+
     def _append_trail_point(self, robot_px: tuple[int, int]) -> None:
         """Append a robot pose to the live trail, filtering teleports."""
+        point = (robot_px[0], robot_px[1], self._path_travel)
         if not self._robot_trail:
-            self._robot_trail.append(robot_px)
+            self._robot_trail.append(point)
             return
         last = self._robot_trail[-1]
         dx = robot_px[0] - last[0]
         dy = robot_px[1] - last[1]
         if self.map_data is None:
-            self._robot_trail.append(robot_px)
+            self._robot_trail.append(point)
         else:
             max_step = max(self.map_data.width, self.map_data.height) // 10
             dist_sq = dx * dx + dy * dy
             if 0 < dist_sq <= max_step * max_step:
-                self._robot_trail.append(robot_px)
+                self._robot_trail.append(point)
         if len(self._robot_trail) > _MAX_TRAIL_POINTS:
             self._robot_trail = self._robot_trail[-_MAX_TRAIL_POINTS :]
 
