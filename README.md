@@ -23,7 +23,8 @@ A Home Assistant custom integration for Eufy robot vacuums. This integration is 
 
 ## Map
 
-![Floor map with room names, the dock, the robot, and a dashed path](docs/map.png)
+<img width="1078" height="613" alt="image" src="https://github.com/user-attachments/assets/097912de-a417-4250-a6a6-f651937de615" />
+
 
 The camera shows the rooms, the dock, the robot, and the cleaning path. The last floor is kept and shown again after a restart.
 
