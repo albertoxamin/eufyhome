@@ -17,6 +17,7 @@ from eufy_clean.api.map_stream import (  # noqa: E402
     MapStreamHandler,
     _dock_cm_from_info,
     _rotated_point,
+    render_settings_from_options,
     _exact_path_point,
     _pose_on_map,
     stream_pb2,
@@ -94,6 +95,13 @@ def main() -> None:
     assert restored.map_data is not None
     assert restored.map_data.width == house.width
     assert restored.robot_pixel == (68, 184)
+    style = render_settings_from_options({})["style"]
+    assert style["icon_scale"] == 0.5
+    assert style["path_spacing"] == 1.0
+    assert style["path_alpha"] == 0.5
+    tight = render_settings_from_options({"icon_scale": 0.01, "path_spacing": 9})["style"]
+    assert tight["icon_scale"] == 0.01
+    assert tight["path_spacing"] == 8.0
     print("ok", live.robot_pixel, "dock", live._dock_pixel)
 
 

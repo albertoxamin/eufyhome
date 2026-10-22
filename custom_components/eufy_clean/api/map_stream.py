@@ -39,6 +39,14 @@ def _rgb_option(
     return default
 
 
+def _clamped_float(value: Any, default: float, low: float, high: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return min(max(number, low), high)
+
+
 def render_settings_from_options(options: Mapping[str, Any] | None) -> dict[str, Any]:
     """Build renderer settings from config-entry options.
 
@@ -79,9 +87,12 @@ def render_settings_from_options(options: Mapping[str, Any] | None) -> dict[str,
             },
             "room_palette": palette,
             "path_color": _rgb_option(options.get("path"), (255, 255, 255)),
+            "path_alpha": _clamped_float(options.get("path_alpha"), 0.5, 0.0, 1.0),
             "path_style": options.get("path_style") or "segmented",
             "path_width": int(options.get("path_width", 2)),
+            "path_spacing": _clamped_float(options.get("path_spacing"), 1.0, 0.25, 8.0),
             "path_radius_scale": float(options.get("radius", 1.9)),
+            "icon_scale": _clamped_float(options.get("icon_scale"), 0.5, 0.01, 2.0),
             "render_scale": int(options.get("dpi", 2)),
             "label_color": _rgb_option(options.get("label"), (30, 30, 30)),
             "label_bg": _rgb_option(options.get("label_bg"), (255, 255, 255)),
@@ -532,9 +543,13 @@ def render_map_png(
     style = style or {}
     pixel_colors = style.get("pixel_colors") or _PIXEL_COLORS
     room_palette = style.get("room_palette") or _ROOM_PALETTE
-    path_color = tuple(style["path_color"]) if style.get("path_color") else _PATH_OVERLAY
+    path_rgb = tuple(style["path_color"]) if style.get("path_color") else _PATH_OVERLAY
+    path_alpha = int(round(_clamped_float(style.get("path_alpha"), 0.5, 0.0, 1.0) * 255))
+    path_color = (path_rgb[0], path_rgb[1], path_rgb[2], path_alpha)
     path_radius_scale = float(style.get("path_radius_scale", 1.2))
     path_width = min(max(int(style.get("path_width") or 1), 1), 12)
+    path_spacing = _clamped_float(style.get("path_spacing"), 1.0, 0.25, 8.0)
+    icon_scale = _clamped_float(style.get("icon_scale"), 0.5, 0.01, 2.0)
     path_style = style.get("path_style") or "solid"
     if path_style not in ("solid", "dotted", "segmented"):
         path_style = "solid"
@@ -667,8 +682,11 @@ def render_map_png(
 
     # ------------------------------------------------------------------
     # Step 4 — cleaning trail / streamed path
+    # Drawn on a transparent layer so the path color's alpha blends with the floor.
     # Dock, labels, and the robot are drawn after rotation so they stay upright.
     # ------------------------------------------------------------------
+    path_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(path_layer)
     # About 1.5 m at 5 cm/pixel. Longer gaps are a new segment, not a line across the map.
     _MAX_TRAIL_JUMP_SQ = 30 * 30
 
@@ -681,9 +699,9 @@ def render_map_png(
         out_pts = [_to_out(tx, ty) for tx, ty in raw_pts]
         # Width is output pixels, not multiplied by render scale, so a 3× image can stay skinny.
         stroke = path_width
-        dot_step = max(stroke * 3, round(6 * render_scale))
-        dash = max(stroke * 2, round(10 * render_scale))
-        gap = max(stroke * 2, round(7 * render_scale))
+        dot_step = max(1, round(max(stroke * 3, 6 * render_scale) * path_spacing))
+        dash = max(1, round(max(stroke * 2, 10 * render_scale) * path_spacing))
+        gap = max(1, round(max(stroke * 2, 7 * render_scale) * path_spacing))
         traveled = 0.0
 
         def _stroke(p0: tuple[float, float], p1: tuple[float, float]) -> None:
@@ -761,6 +779,9 @@ def render_map_png(
             if 0 <= ox < out_w and 0 <= oy < out_h:
                 _circle(ox, oy, dot_r, path_color)
 
+    img = Image.alpha_composite(img.convert("RGBA"), path_layer).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
     # ------------------------------------------------------------------
     # Step 5 — rotate the floor, then draw upright labels and icons
     # ------------------------------------------------------------------
@@ -777,7 +798,9 @@ def render_map_png(
         dx, dy = _upright(*_to_out(dock_pixel[0], dock_pixel[1]))
         station = _bundled_icon("t2280_map_station.png")
         if station is not None:
-            img = _blit_icon(img, station, dx, dy, max(8, round(18 * render_scale)))
+            img = _blit_icon(
+                img, station, dx, dy, max(1, round(36 * render_scale * icon_scale))
+            )
             draw = ImageDraw.Draw(img)
         else:
             cell = max(1, round(render_scale))
@@ -853,7 +876,9 @@ def render_map_png(
         elif robot_style == "dot":
             robot_icon = _bundled_icon("t2280_map_robot.png")
             if robot_icon is not None:
-                img = _blit_icon(img, robot_icon, orx, ory, max(6, round(11 * render_scale)))
+                img = _blit_icon(
+                    img, robot_icon, orx, ory, max(1, round(22 * render_scale * icon_scale))
+                )
                 draw = ImageDraw.Draw(img)
             else:
                 _circle(orx, ory, 7.0 * render_scale, (255, 255, 255))

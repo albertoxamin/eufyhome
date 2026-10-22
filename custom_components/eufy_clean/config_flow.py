@@ -185,9 +185,12 @@ _DEFAULTS: dict[str, Any] = {
     "r7": _rgb("c88296"),
     "r8": _rgb("a0c8b4"),
     "path": _rgb("ffffff"),
+    "path_alpha": 0.5,
     "path_style": "segmented",
     "path_width": 2,
+    "path_spacing": 1.0,
     "radius": 1.9,
+    "icon_scale": 0.5,
     "map_rotation": DEFAULT_MAP_ROTATION,
     "robot": "dot",
     "status": "none",
@@ -321,6 +324,7 @@ def _schema() -> vol.Schema:
             vol.Optional("r7"): _color("r7", "c88296"),
             vol.Optional("r8"): _color("r8", "a0c8b4"),
             vol.Optional("path"): _color("path", "ffffff"),
+            vol.Optional("path_alpha"): _number(0, 1, 0.05),
             vol.Optional("path_style"): _choice(
                 [
                     {"value": "segmented", "label": "Segmented"},
@@ -329,7 +333,9 @@ def _schema() -> vol.Schema:
                 ]
             ),
             vol.Optional("path_width"): _number(1, 8, 1),
+            vol.Optional("path_spacing"): _number(0.25, 8, 0.25),
             vol.Optional("radius"): _number(0.2, 4, 0.1),
+            vol.Optional("icon_scale"): _number(0.01, 2, 0.01),
             vol.Optional(CONF_MAP_ROTATION): vol.In(MAP_ROTATION_OPTIONS),
             vol.Optional("robot"): _choice(
                 [
