@@ -150,6 +150,7 @@ class EufyCleanMapCard extends HTMLElement {
     this._advanced.addEventListener("click", () => {
       this._advancedOpen = !this._advancedOpen;
       if (!this._advancedOpen) {
+        this._editingZones = false;
         this._remote("brake");
       }
       this._paint();
@@ -586,12 +587,22 @@ class EufyCleanMapCard extends HTMLElement {
   _hold(label, direction) {
     const button = document.createElement("button");
     button.textContent = label;
+    let timer = null;
+    const send = () => this._remote(direction);
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       button.setPointerCapture(event.pointerId);
-      this._remote(direction);
+      send();
+      timer = setInterval(send, 200);
     });
-    const stop = () => this._remote("brake");
+    const stop = () => {
+      if (!timer) {
+        return;
+      }
+      clearInterval(timer);
+      timer = null;
+      this._remote("brake");
+    };
     button.addEventListener("pointerup", stop);
     button.addEventListener("pointercancel", stop);
     return button;

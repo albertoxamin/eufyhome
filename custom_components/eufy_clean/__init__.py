@@ -124,7 +124,7 @@ async def async_register_map_card(hass: HomeAssistant) -> None:
             ),
         ]
     )
-    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js?v=2")
+    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js?v=3")
     hass.data.setdefault(DOMAIN, {})[_CARD_KEY] = True
 
 
