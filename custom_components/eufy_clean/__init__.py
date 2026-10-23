@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 
@@ -33,14 +34,23 @@ PLATFORMS: list[Platform] = [
 ]
 
 SERVICE_CLEAN_ROOMS = "clean_rooms"
+SERVICE_CLEAN_SQUARE = "clean_square"
+SERVICE_CLEAN_AREA = "clean_area"
+SERVICE_MAP_POINT = "map_point"
+SERVICE_SET_ZONES = "set_zones"
+_CARD_KEY = "map_card"
 ATTR_ROOM_IDS = "room_ids"
 ATTR_CLEAN_TIMES = "clean_times"
+ATTR_SQUARE_X = "x"
+ATTR_SQUARE_Y = "y"
+ATTR_SQUARE_SIZE = "size"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Eufy Clean from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     async_register_map_preview(hass)
+    await async_register_map_card(hass)
 
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
@@ -63,6 +73,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_register_services(hass)
 
     return True
+
+
+def _devices_for_call(hass: HomeAssistant, call: ServiceCall) -> list[Any]:
+    """Devices whose vacuum or map entity is in the service call."""
+    entity_ids = call.data.get("entity_id", [])
+    if isinstance(entity_ids, str):
+        entity_ids = [entity_ids]
+    registry = er.async_get(hass)
+    found: list[Any] = []
+    for entity_id in entity_ids:
+        entity_entry = registry.async_get(entity_id)
+        if not entity_entry or not entity_entry.unique_id:
+            continue
+        for coordinator in hass.data[DOMAIN].values():
+            if not isinstance(coordinator, EufyCleanDataUpdateCoordinator):
+                continue
+            for device_id, device in coordinator.devices.items():
+                if (
+                    entity_entry.unique_id == device_id
+                    or entity_entry.unique_id.startswith(device_id)
+                ):
+                    found.append(device)
+                    break
+    return found
+
+
+async def async_register_map_card(hass: HomeAssistant) -> None:
+    """Serve the map card and load it on every dashboard."""
+    if hass.data.get(DOMAIN, {}).get(_CARD_KEY):
+        return
+    from homeassistant.components.frontend import add_extra_js_url
+    from homeassistant.components.http import StaticPathConfig
+
+    card = Path(__file__).parent / "frontend" / "eufy-clean-map-card.js"
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig("/eufy_clean/eufy-clean-map-card.js", str(card), False)]
+    )
+    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js")
+    hass.data.setdefault(DOMAIN, {})[_CARD_KEY] = True
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -116,6 +165,67 @@ async def async_register_services(hass: HomeAssistant) -> None:
                             )
                             return
 
+    async def handle_clean_square(call: ServiceCall) -> None:
+        """Handle the clean_square service call."""
+        entity_ids = call.data.get("entity_id", [])
+        x = int(call.data[ATTR_SQUARE_X])
+        y = int(call.data[ATTR_SQUARE_Y])
+        size = int(call.data[ATTR_SQUARE_SIZE])
+        clean_times = call.data.get(ATTR_CLEAN_TIMES, 1)
+        entity_registry = er.async_get(hass)
+
+        for entity_id in entity_ids if isinstance(entity_ids, list) else [entity_ids]:
+            entity_entry = entity_registry.async_get(entity_id)
+            if not entity_entry:
+                continue
+            for coordinator in hass.data[DOMAIN].values():
+                if not isinstance(coordinator, EufyCleanDataUpdateCoordinator):
+                    continue
+                for device_id, device in coordinator.devices.items():
+                    if (
+                        entity_entry.unique_id == device_id
+                        or entity_entry.unique_id.startswith(device_id)
+                    ):
+                        await device.clean_square(x, y, size, clean_times)
+                        _LOGGER.info(
+                            "Started square clean for %s: centre=(%s,%s) side=%s",
+                            entity_id,
+                            x,
+                            y,
+                            size,
+                        )
+                        return
+
+    async def handle_map_point(call: ServiceCall) -> dict[str, Any]:
+        """Return the room and zone under a picture point."""
+        devices = _devices_for_call(hass, call)
+        if not devices:
+            return {"room_id": 0, "room_name": "", "zone_kind": "", "zone_index": -1}
+        return devices[0].map_point(float(call.data["x"]), float(call.data["y"]))
+
+    async def handle_clean_area(call: ServiceCall) -> None:
+        """Clean the rectangle drawn on the picture."""
+        devices = _devices_for_call(hass, call)
+        if not devices:
+            return
+        await devices[0].clean_area(
+            float(call.data["x1"]),
+            float(call.data["y1"]),
+            float(call.data["x2"]),
+            float(call.data["y2"]),
+            call.data.get(ATTR_CLEAN_TIMES, 1),
+        )
+
+    async def handle_set_zones(call: ServiceCall) -> None:
+        """Replace no-go and no-mop zones from picture rectangles."""
+        devices = _devices_for_call(hass, call)
+        if not devices:
+            return
+        await devices[0].set_zones(
+            list(call.data.get("nogo") or []),
+            list(call.data.get("nomop") or []),
+        )
+
     # Only register if not already registered
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAN_ROOMS):
         hass.services.async_register(
@@ -129,6 +239,81 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.All(
                         vol.Coerce(int), vol.Range(min=1, max=3)
                     ),
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_CLEAN_SQUARE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CLEAN_SQUARE,
+            handle_clean_square,
+            schema=vol.Schema(
+                {
+                    vol.Required("entity_id"): vol.Any(str, [str]),
+                    vol.Required(ATTR_SQUARE_X): vol.All(
+                        vol.Coerce(int), vol.Range(min=-20000, max=20000)
+                    ),
+                    vol.Required(ATTR_SQUARE_Y): vol.All(
+                        vol.Coerce(int), vol.Range(min=-20000, max=20000)
+                    ),
+                    vol.Required(ATTR_SQUARE_SIZE): vol.All(
+                        vol.Coerce(int), vol.Range(min=50, max=2000)
+                    ),
+                    vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.All(
+                        vol.Coerce(int), vol.Range(min=1, max=3)
+                    ),
+                }
+            ),
+        )
+
+    _unit = vol.All(vol.Coerce(float), vol.Range(min=0, max=1))
+    _rect = vol.All([_unit], vol.Length(min=4, max=4))
+
+    if not hass.services.has_service(DOMAIN, SERVICE_MAP_POINT):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_MAP_POINT,
+            handle_map_point,
+            schema=vol.Schema(
+                {
+                    vol.Required("entity_id"): vol.Any(str, [str]),
+                    vol.Required("x"): _unit,
+                    vol.Required("y"): _unit,
+                }
+            ),
+            supports_response=SupportsResponse.ONLY,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_CLEAN_AREA):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_CLEAN_AREA,
+            handle_clean_area,
+            schema=vol.Schema(
+                {
+                    vol.Required("entity_id"): vol.Any(str, [str]),
+                    vol.Required("x1"): _unit,
+                    vol.Required("y1"): _unit,
+                    vol.Required("x2"): _unit,
+                    vol.Required("y2"): _unit,
+                    vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.All(
+                        vol.Coerce(int), vol.Range(min=1, max=3)
+                    ),
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_ZONES):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_ZONES,
+            handle_set_zones,
+            schema=vol.Schema(
+                {
+                    vol.Required("entity_id"): vol.Any(str, [str]),
+                    vol.Optional("nogo", default=[]): [_rect],
+                    vol.Optional("nomop", default=[]): [_rect],
                 }
             ),
         )

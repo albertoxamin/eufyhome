@@ -365,42 +365,12 @@ class MapData:
     forbidden_zones: list[list[tuple[int, int]]] = field(default_factory=list)
     ban_mop_zones: list[list[tuple[int, int]]] = field(default_factory=list)
     dock_cm: tuple[int, int] | None = None
+    map_id: int = 0
+    releases: int = 0
 
     def has_restricted_zones(self) -> bool:
         """Return True when any no-go, no-mop, or virtual-wall data is present."""
         return bool(self.virtual_walls or self.forbidden_zones or self.ban_mop_zones)
-
-    def room_id_at_normalized(self, nx: float, ny: float) -> int:
-        """Return the room id under a normalized point on the *rendered* map image.
-
-        ``(nx, ny)`` are fractions (0-1) of the rendered PNG, top-left origin (the
-        HA camera-image convention — the same space the zone card draws in). This
-        is the exact inverse of ``render_map_png``'s room-mask lookup: map the point
-        back to a source grid pixel (undoing the baked-in Y-flip, exactly as
-        ``normalized_rects_to_quads_cm`` does), then index ``room_pixels`` with the
-        same outline origin offset the renderer uses. Returns 0 when there is no
-        room mask, the point is outside any room, or no map has been decoded yet.
-        """
-        if not self.room_pixels or not self.room_outline_width or not self.room_outline_height:
-            return 0
-        nx = min(max(float(nx), 0.0), 1.0)
-        ny = min(max(float(ny), 0.0), 1.0)
-        res = self.resolution or 5
-        w, h = self.width, self.height
-        # normalized (rendered, top-left) -> source grid pixel; the render Y-flips,
-        # so the displayed top edge is the source bottom row.
-        px = min(max(round(nx * w), 0), max(w - 1, 0))
-        py = min(max(round((h - 1) - ny * h), 0), max(h - 1, 0))
-        # the room mask has its own origin; this offset matches render_map_png's _ro_dx/_ro_dy.
-        ro_dx = round((self.origin_x - self.room_outline_origin_x) / res)
-        ro_dy = round((self.origin_y - self.room_outline_origin_y) / res)
-        rx, ry = px - ro_dx, py - ro_dy
-        if 0 <= rx < self.room_outline_width and 0 <= ry < self.room_outline_height:
-            idx = ry * self.room_outline_width + rx
-            if 0 <= idx < len(self.room_pixels):
-                return self.room_pixels[idx] >> 2  # low 2 bits are sub-type, not id
-        return 0
-
 
 @dataclass
 class RestrictedZoneLayers:
@@ -591,10 +561,10 @@ def _blit_icon(img: Image.Image, icon: Image.Image, cx: int, cy: int, width: int
     return base.convert("RGB")
 
 
-def _crop_to_content(
+def _content_crop_box(
     img: Image.Image, background: tuple[int, int, int], margin: int = 16
-) -> Image.Image:
-    """Trim empty margin so at most ``margin`` pixels remain past the rooms."""
+) -> tuple[int, int, int, int]:
+    """Box that keeps ``margin`` pixels past non-background pixels."""
     width, height = img.size
     min_x, min_y, max_x, max_y = width, height, -1, -1
     for index, pixel in enumerate(img.getdata()):
@@ -606,15 +576,20 @@ def _crop_to_content(
         max_x = max(max_x, x)
         max_y = max(max_y, y)
     if max_x < 0:
-        return img
-    return img.crop(
-        (
-            max(0, min_x - margin),
-            max(0, min_y - margin),
-            min(width, max_x + margin + 1),
-            min(height, max_y + margin + 1),
-        )
+        return 0, 0, width, height
+    return (
+        max(0, min_x - margin),
+        max(0, min_y - margin),
+        min(width, max_x + margin + 1),
+        min(height, max_y + margin + 1),
     )
+
+
+def _crop_to_content(
+    img: Image.Image, background: tuple[int, int, int], margin: int = 16
+) -> Image.Image:
+    """Trim empty margin so at most ``margin`` pixels remain past the rooms."""
+    return img.crop(_content_crop_box(img, background, margin))
 
 
 def _rotated_point(x: int, y: int, width: int, height: int, degrees: int) -> tuple[int, int]:
@@ -627,6 +602,157 @@ def _rotated_point(x: int, y: int, width: int, height: int, degrees: int) -> tup
     if degrees == 270:
         return y, width - 1 - x
     return x, y
+
+
+def _unrotated_point(x: int, y: int, width: int, height: int, degrees: int) -> tuple[int, int]:
+    """Inverse of ``_rotated_point``."""
+    degrees = int(degrees) % 360
+    if degrees == 90:
+        return y, height - 1 - x
+    if degrees == 180:
+        return width - 1 - x, height - 1 - y
+    if degrees == 270:
+        return width - 1 - y, x
+    return x, y
+
+
+@dataclass(frozen=True)
+class MapFrame:
+    """How a rendered PNG maps back to centimetres on the floor."""
+
+    scale: float
+    rotation: int
+    pre_w: int
+    pre_h: int
+    crop_left: int
+    crop_top: int
+    image_w: int
+    image_h: int
+    origin_x: int
+    origin_y: int
+    resolution: int
+    src_w: int
+    src_h: int
+
+
+def world_to_picture(frame: MapFrame, wx: int, wy: int) -> tuple[float, float]:
+    """Map centimetres to a fraction of the cropped picture, top-left origin."""
+    res = frame.resolution or 5
+    mx = round((int(wx) - frame.origin_x) / res)
+    my = round((int(wy) - frame.origin_y) / res)
+    sx = round(mx * frame.scale)
+    sy = round((frame.src_h - 1 - my) * frame.scale)
+    ux, uy = _rotated_point(sx, sy, frame.pre_w, frame.pre_h, frame.rotation)
+    if frame.image_w <= 0 or frame.image_h <= 0:
+        return 0.0, 0.0
+    return (ux - frame.crop_left) / frame.image_w, (uy - frame.crop_top) / frame.image_h
+
+
+def picture_to_source(frame: MapFrame, nx: float, ny: float) -> tuple[int, int]:
+    """Picture fraction to a source-map pixel."""
+    fx = min(max(float(nx), 0.0), 1.0) * frame.image_w
+    fy = min(max(float(ny), 0.0), 1.0) * frame.image_h
+    ux = int(round(fx)) + frame.crop_left
+    uy = int(round(fy)) + frame.crop_top
+    sx, sy = _unrotated_point(ux, uy, frame.pre_w, frame.pre_h, frame.rotation)
+    scale = frame.scale or 1.0
+    mx = int(round(sx / scale))
+    my = int(round(frame.src_h - 1 - (sy / scale)))
+    return mx, my
+
+
+def picture_to_world(frame: MapFrame, nx: float, ny: float) -> tuple[int, int]:
+    """Picture fraction to centimetres on the floor."""
+    mx, my = picture_to_source(frame, nx, ny)
+    res = frame.resolution or 5
+    return frame.origin_x + mx * res, frame.origin_y + my * res
+
+
+def picture_rect_to_quad(
+    frame: MapFrame, x1: float, y1: float, x2: float, y2: float
+) -> list[tuple[int, int]]:
+    """Axis-aligned picture rectangle to a quadrangle in centimetres."""
+    points = [
+        picture_to_world(frame, x1, y1),
+        picture_to_world(frame, x2, y1),
+        picture_to_world(frame, x2, y2),
+        picture_to_world(frame, x1, y2),
+    ]
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    return [(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)]
+
+
+def picture_room_id(map_data: MapData, frame: MapFrame, nx: float, ny: float) -> int:
+    """Room id under a point on the rendered picture. 0 is no room."""
+    if not map_data.room_pixels or not map_data.room_outline_width or not map_data.room_outline_height:
+        return 0
+    mx, my = picture_to_source(frame, nx, ny)
+    res = map_data.resolution or 5
+    ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
+    ro_dy = round((map_data.origin_y - map_data.room_outline_origin_y) / res)
+    rx, ry = mx - ro_dx, my - ro_dy
+    if 0 <= rx < map_data.room_outline_width and 0 <= ry < map_data.room_outline_height:
+        idx = ry * map_data.room_outline_width + rx
+        if 0 <= idx < len(map_data.room_pixels):
+            return map_data.room_pixels[idx] >> 2
+    return 0
+
+
+def picture_zone_boxes(map_data: MapData, frame: MapFrame) -> dict[str, list[dict[str, float]]]:
+    """No-go and no-mop zones as boxes on the rendered picture."""
+
+    def boxes(quads: list[list[tuple[int, int]]]) -> list[dict[str, float]]:
+        out: list[dict[str, float]] = []
+        for index, quad in enumerate(quads):
+            pts = [world_to_picture(frame, x, y) for x, y in quad]
+            out.append(
+                {
+                    "i": index,
+                    "x1": round(min(point[0] for point in pts), 4),
+                    "y1": round(min(point[1] for point in pts), 4),
+                    "x2": round(max(point[0] for point in pts), 4),
+                    "y2": round(max(point[1] for point in pts), 4),
+                }
+            )
+        return out
+
+    return {
+        "nogo": boxes(map_data.forbidden_zones),
+        "nomop": boxes(map_data.ban_mop_zones),
+    }
+
+
+def picture_hit(map_data: MapData, frame: MapFrame, nx: float, ny: float) -> dict[str, Any]:
+    """Room and zone under one picture point."""
+    room_id = picture_room_id(map_data, frame, nx, ny)
+    kind = ""
+    index = -1
+    best: tuple[float, str, int] | None = None
+    for zone_kind, quads in (
+        ("nogo", map_data.forbidden_zones),
+        ("nomop", map_data.ban_mop_zones),
+    ):
+        for zone_index, quad in enumerate(quads):
+            pts = [world_to_picture(frame, x, y) for x, y in quad]
+            x1 = min(point[0] for point in pts)
+            x2 = max(point[0] for point in pts)
+            y1 = min(point[1] for point in pts)
+            y2 = max(point[1] for point in pts)
+            if x1 <= nx <= x2 and y1 <= ny <= y2:
+                area = (x2 - x1) * (y2 - y1)
+                if best is None or area < best[0]:
+                    best = (area, zone_kind, zone_index)
+    if best is not None:
+        kind, index = best[1], best[2]
+    return {
+        "room_id": room_id,
+        "room_name": map_data.room_names.get(room_id, ""),
+        "zone_kind": kind,
+        "zone_index": index,
+    }
 
 
 def _decode_room_pixels(pixels: bytes, pixel_size: int) -> bytes:
@@ -660,6 +786,7 @@ def render_map_png(
     robot_style: str = "googly",
     rotation: int = 0,
     style: dict[str, Any] | None = None,
+    frame_out: list[MapFrame] | None = None,
 ) -> bytes:
     """Render a PNG from MapData using Pillow.
 
@@ -1106,6 +1233,7 @@ def render_map_png(
                 bpy = by + round(oy2 * render_scale)
                 _circle(bpx, bpy, max(0.6, 0.45 * render_scale), (20, 20, 20))
 
+    crop_left = crop_top = 0
     if src_centroids:
         corners = []
         for vals in src_centroids.values():
@@ -1121,16 +1249,37 @@ def render_map_png(
                 )
             )
         if corners:
+            crop_left = max(0, min(point[0] for point in corners) - 16)
+            crop_top = max(0, min(point[1] for point in corners) - 16)
             img = img.crop(
                 (
-                    max(0, min(point[0] for point in corners) - 16),
-                    max(0, min(point[1] for point in corners) - 16),
+                    crop_left,
+                    crop_top,
                     min(img.width, max(point[0] for point in corners) + 17),
                     min(img.height, max(point[1] for point in corners) + 17),
                 )
             )
     else:
-        img = _crop_to_content(img, unknown)
+        crop_left, crop_top, crop_right, crop_bottom = _content_crop_box(img, unknown)
+        img = img.crop((crop_left, crop_top, crop_right, crop_bottom))
+    if frame_out is not None:
+        frame_out.append(
+            MapFrame(
+                scale=scale,
+                rotation=int(rotation) % 360,
+                pre_w=pre_w,
+                pre_h=pre_h,
+                crop_left=crop_left,
+                crop_top=crop_top,
+                image_w=img.width,
+                image_h=img.height,
+                origin_x=map_data.origin_x,
+                origin_y=map_data.origin_y,
+                resolution=res,
+                src_w=width,
+                src_h=height,
+            )
+        )
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=False, compress_level=3)
     return buf.getvalue()
@@ -1229,6 +1378,8 @@ def try_extract_map_data(hex_data: str) -> MapData | None:
         forbidden_zones=forbidden_zones,
         ban_mop_zones=ban_mop_zones,
         dock_cm=_dock_cm_from_info(map_msg.info),
+        map_id=int(map_msg.map_id or map_msg.info.map_id or 0),
+        releases=int(map_msg.releases or 0),
     )
 
 
@@ -1517,6 +1668,7 @@ class MapStreamHandler:
     def __init__(self, rotation: int = 0) -> None:
         self.map_data: MapData | None = None
         self.map_image: bytes | None = None
+        self.map_frame: MapFrame | None = None
         self.map_channel_id: int | None = None
         self.last_seen_maps: dict[int, str] = {}
         self._robot_pixel: tuple[int, int] | None = None
@@ -1916,6 +2068,8 @@ class MapStreamHandler:
             "ban_mop_zones": map_data.ban_mop_zones,
             "dock_cm": list(map_data.dock_cm) if map_data.dock_cm else None,
             "robot_pixel": list(self._robot_pixel) if self._robot_pixel else None,
+            "map_id": map_data.map_id,
+            "releases": map_data.releases,
         }
 
     def restore_map_snapshot(self, payload: dict[str, Any]) -> bool:
@@ -1943,6 +2097,8 @@ class MapStreamHandler:
                 forbidden_zones=payload.get("forbidden_zones") or [],
                 ban_mop_zones=payload.get("ban_mop_zones") or [],
                 dock_cm=(int(dock[0]), int(dock[1])) if dock else None,
+                map_id=int(payload.get("map_id") or 0),
+                releases=int(payload.get("releases") or 0),
             )
         except (KeyError, TypeError, ValueError):
             return False
@@ -1980,6 +2136,7 @@ class MapStreamHandler:
         if self.map_data is None:
             return
         try:
+            frame_out: list[MapFrame] = []
             self.map_image = render_map_png(
                 self.map_data,
                 robot_pixel=self._robot_pixel if self._show_robot else None,
@@ -1993,6 +2150,29 @@ class MapStreamHandler:
                 robot_style=self._robot_style,
                 rotation=self._rotation,
                 style=self._style,
+                frame_out=frame_out,
             )
+            self.map_frame = frame_out[0] if frame_out else None
         except Exception as exc:
             _LOGGER.debug("Map render failed: %s", exc)
+
+    def picture_hit(self, nx: float, ny: float) -> dict[str, Any]:
+        """Room and zone under a point on the current picture."""
+        empty = {"room_id": 0, "room_name": "", "zone_kind": "", "zone_index": -1}
+        if self.map_data is None or self.map_frame is None:
+            return empty
+        return picture_hit(self.map_data, self.map_frame, nx, ny)
+
+    def picture_zone_boxes(self) -> dict[str, list[dict[str, Any]]]:
+        """No-go and no-mop boxes on the current picture."""
+        if self.map_data is None or self.map_frame is None:
+            return {"nogo": [], "nomop": []}
+        return picture_zone_boxes(self.map_data, self.map_frame)
+
+    def picture_rect_quad(
+        self, x1: float, y1: float, x2: float, y2: float
+    ) -> list[tuple[int, int]] | None:
+        """Picture rectangle to centimetre corners, or None when no map is drawn."""
+        if self.map_frame is None:
+            return None
+        return picture_rect_to_quad(self.map_frame, x1, y1, x2, y2)

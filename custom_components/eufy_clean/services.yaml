@@ -23,3 +23,155 @@ clean_rooms:
           min: 1
           max: 3
           mode: slider
+
+clean_square:
+  name: Clean Square
+  description: >
+    Clean one square on the current map. x and y are the centre in
+    centimetres, the same coordinates as the robot pose. size is the side
+    length in centimetres.
+  target:
+    entity:
+      integration: eufy_clean
+      domain: vacuum
+  fields:
+    x:
+      name: Centre X
+      description: Centre X in centimetres.
+      required: true
+      example: "-35"
+      selector:
+        number:
+          min: -20000
+          max: 20000
+          mode: box
+    y:
+      name: Centre Y
+      description: Centre Y in centimetres.
+      required: true
+      example: "-770"
+      selector:
+        number:
+          min: -20000
+          max: 20000
+          mode: box
+    size:
+      name: Side length
+      description: Side length in centimetres (50-2000).
+      required: true
+      example: "200"
+      selector:
+        number:
+          min: 50
+          max: 2000
+          mode: box
+    clean_times:
+      name: Clean Times
+      description: Number of times to clean the square (1-3)
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 3
+          mode: slider
+
+map_point:
+  name: Map Point
+  description: Room and zone under a point on the map picture. x and y are fractions from 0 to 1.
+  target:
+    entity:
+      integration: eufy_clean
+      domain: camera
+  fields:
+    x:
+      name: X
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: box
+    y:
+      name: Y
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: box
+
+clean_area:
+  name: Clean Area
+  description: Clean a rectangle drawn on the map picture. Corners are fractions from 0 to 1.
+  target:
+    entity:
+      integration: eufy_clean
+      domain: vacuum
+  fields:
+    x1:
+      name: X1
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: box
+    y1:
+      name: Y1
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: box
+    x2:
+      name: X2
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: box
+    y2:
+      name: Y2
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.01
+          mode: box
+    clean_times:
+      name: Clean Times
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 3
+          mode: slider
+
+set_zones:
+  name: Set Zones
+  description: Replace no-go and no-mop zones. Each rectangle is x1, y1, x2, y2 as picture fractions. Virtual walls stay.
+  target:
+    entity:
+      integration: eufy_clean
+      domain: vacuum
+  fields:
+    nogo:
+      name: No-go rectangles
+      required: false
+      selector:
+        object:
+    nomop:
+      name: No-mop rectangles
+      required: false
+      selector:
+        object:

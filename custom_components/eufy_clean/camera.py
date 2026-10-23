@@ -385,4 +385,7 @@ class EufyCleanMapCamera(Camera):
             ],
             "has_cleaning_path": self._device.has_cleaning_path(),
             "robot_on_map": self._device.get_robot_pixel() is not None,
+            "zone_boxes": self._device.get_zone_boxes()
+            if hasattr(self._device, "get_zone_boxes")
+            else {"nogo": [], "nomop": []},
         }

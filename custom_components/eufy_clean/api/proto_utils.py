@@ -473,6 +473,100 @@ def encode_room_clean_command(room_ids: list[int], clean_times: int = 1) -> str:
     return base64.b64encode(result).decode()
 
 
+def square_corners(x: int, y: int, size: int) -> list[tuple[int, int]]:
+    """Four corners of an axis-aligned square, centre ``(x, y)``, side ``size``.
+
+    Coordinates are map centimetres, the same frame as the robot pose.
+    Order is p0..p3 around the square.
+    """
+    half = int(size) // 2
+    return [
+        (int(x) - half, int(y) - half),
+        (int(x) + half, int(y) - half),
+        (int(x) + half, int(y) + half),
+        (int(x) - half, int(y) + half),
+    ]
+
+
+def _fill_quad(quad: Any, corners: list[tuple[int, int]]) -> None:
+    points = (quad.p0, quad.p1, quad.p2, quad.p3)
+    for point, (px, py) in zip(points, corners):
+        point.x = int(px)
+        point.y = int(py)
+
+
+def encode_zone_clean_command(
+    corners: list[tuple[int, int]],
+    clean_times: int = 1,
+    map_id: int = 0,
+    releases: int = 0,
+) -> str:
+    """Encode ModeCtrlRequest START_SELECT_ZONES_CLEAN for one quadrangle.
+
+    Corners are centimetres, p0..p3. map_id and releases come from the
+    current floor; 0 leaves the proto default.
+    """
+    from ..proto.cloud import control_pb2
+
+    req = control_pb2.ModeCtrlRequest()
+    req.method = CONTROL_START_SELECT_ZONES_CLEAN
+    zone = req.select_zones_clean.zones.add()
+    _fill_quad(zone.quadrangle, corners)
+    zone.clean_times = clean_times
+    if map_id:
+        req.select_zones_clean.map_id = int(map_id)
+    if releases:
+        req.select_zones_clean.releases = int(releases)
+    return encode_protobuf_message(req)
+
+
+def encode_square_clean_command(
+    x: int,
+    y: int,
+    size: int,
+    clean_times: int = 1,
+    map_id: int = 0,
+    releases: int = 0,
+) -> str:
+    """Encode a square zone clean. ``x`` and ``y`` are the centre in centimetres."""
+    return encode_zone_clean_command(
+        square_corners(x, y, size), clean_times, map_id, releases
+    )
+
+
+def encode_restricted_zones_command(
+    virtual_walls: list[tuple[tuple[int, int], tuple[int, int]]],
+    forbidden: list[list[tuple[int, int]]],
+    ban_mop: list[list[tuple[int, int]]],
+    map_id: int = 0,
+    releases: int = 0,
+) -> str:
+    """Encode MapEditRequest SET_RESTRICTED_ZONES for the whole zone list.
+
+    Virtual walls are copied through. No-go and no-mop replace the previous set.
+    """
+    from ..proto.cloud import map_edit_pb2
+
+    req = map_edit_pb2.MapEditRequest()
+    req.method = map_edit_pb2.MapEditRequest.SET_RESTRICTED_ZONES
+    if map_id:
+        req.map_id = int(map_id)
+    zone = req.restricted_zone
+    if map_id:
+        zone.map_id = int(map_id)
+    if releases:
+        zone.releases = int(releases)
+    for start, end in virtual_walls:
+        line = zone.virtual_walls.add()
+        line.p0.x, line.p0.y = int(start[0]), int(start[1])
+        line.p1.x, line.p1.y = int(end[0]), int(end[1])
+    for corners in forbidden:
+        _fill_quad(zone.forbidden_zones.add(), corners)
+    for corners in ban_mop:
+        _fill_quad(zone.ban_mop_zones.add(), corners)
+    return encode_protobuf_message(req)
+
+
 def decode_scene_list(base64_value: str) -> list[dict[str, Any]]:
     """
     Decode SceneResponse protobuf from DPS SCENE_LIST (180).

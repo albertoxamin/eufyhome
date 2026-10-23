@@ -19,7 +19,7 @@ from ..const import (
     LEGACY_DPS_MAP,
     NOVEL_DPS_MAP,
 )
-from .map_commands import build_map_get_all_command
+from .map_commands import build_map_get_all_command, build_set_zones_command
 from .map_stream import MapStreamHandler, render_settings_from_options
 from .proto_utils import (
     CLEAN_EXTENT_NARROW,
@@ -50,6 +50,8 @@ from .proto_utils import (
     encode_dnd,
     encode_room_clean_command,
     encode_scene_clean_command,
+    encode_square_clean_command,
+    encode_zone_clean_command,
     encode_station_auto_cfg,
     encode_station_manual_cmd,
     is_base64_encoded,
@@ -422,6 +424,100 @@ class BaseDevice:
         command = encode_room_clean_command(room_ids, clean_times)
         await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         _LOGGER.info("Started cleaning rooms: %s", room_ids)
+
+    async def clean_square(
+        self, x: int, y: int, size: int, clean_times: int = 1
+    ) -> None:
+        """Start cleaning one square. ``x`` and ``y`` are the centre in centimetres."""
+        if not self._novel_api:
+            _LOGGER.warning("Zone cleaning not supported on legacy devices")
+            return
+
+        handler = getattr(self, "_map_handler", None)
+        floor = handler.map_data if handler is not None else None
+        command = encode_square_clean_command(
+            x,
+            y,
+            size,
+            clean_times,
+            map_id=floor.map_id if floor else 0,
+            releases=floor.releases if floor else 0,
+        )
+        await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
+        _LOGGER.info(
+            "Started square clean centre=(%s,%s) side=%s cm", x, y, size
+        )
+
+    def _floor_ids(self) -> tuple[int, int]:
+        handler = getattr(self, "_map_handler", None)
+        floor = handler.map_data if handler is not None else None
+        if floor is None:
+            return 0, 0
+        return floor.map_id, floor.releases
+
+    def map_point(self, nx: float, ny: float) -> dict[str, Any]:
+        """Return the room and zone under a point on the rendered picture."""
+        handler = getattr(self, "_map_handler", None)
+        if handler is None:
+            return {"room_id": 0, "room_name": "", "zone_kind": "", "zone_index": -1}
+        return handler.picture_hit(nx, ny)
+
+    def get_zone_boxes(self) -> dict[str, list[dict[str, Any]]]:
+        """No-go and no-mop boxes in picture coordinates."""
+        handler = getattr(self, "_map_handler", None)
+        if handler is None:
+            return {"nogo": [], "nomop": []}
+        return handler.picture_zone_boxes()
+
+    async def clean_area(
+        self, x1: float, y1: float, x2: float, y2: float, clean_times: int = 1
+    ) -> None:
+        """Start cleaning the rectangle drawn on the picture."""
+        if not self._novel_api:
+            _LOGGER.warning("Zone cleaning not supported on legacy devices")
+            return
+        handler = getattr(self, "_map_handler", None)
+        quad = handler.picture_rect_quad(x1, y1, x2, y2) if handler else None
+        if not quad:
+            _LOGGER.error("No map frame for area clean")
+            return
+        map_id, releases = self._floor_ids()
+        command = encode_zone_clean_command(quad, clean_times, map_id, releases)
+        await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
+        _LOGGER.info("Started area clean corners=%s", quad)
+
+    async def set_zones(
+        self,
+        nogo: list[list[float]],
+        nomop: list[list[float]],
+    ) -> None:
+        """Replace no-go and no-mop zones. Rectangles are picture fractions."""
+        if not self._novel_api:
+            _LOGGER.warning("Zone editing not supported on legacy devices")
+            return
+        handler = getattr(self, "_map_handler", None)
+        floor = handler.map_data if handler is not None else None
+        if handler is None or floor is None or handler.map_frame is None:
+            _LOGGER.error("No map frame for zone edit")
+            return
+
+        def quads(rects: list[list[float]]) -> list[list[tuple[int, int]]]:
+            out = []
+            for rect in rects:
+                quad = handler.picture_rect_quad(rect[0], rect[1], rect[2], rect[3])
+                if quad:
+                    out.append(quad)
+            return out
+
+        command = build_set_zones_command(
+            floor.virtual_walls,
+            quads(nogo),
+            quads(nomop),
+            floor.map_id,
+            floor.releases,
+        )
+        await self.send_command(command)
+        _LOGGER.info("Sent zone edit nogo=%s nomop=%s", len(nogo), len(nomop))
 
     def get_volume(self) -> int:
         """Get current volume level (0-100)."""
