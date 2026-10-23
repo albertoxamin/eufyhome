@@ -175,3 +175,57 @@ set_zones:
       required: false
       selector:
         object:
+
+start_scene:
+  name: Start Scenario
+  description: Start one scenario stored on the robot.
+  target:
+    entity:
+      integration: eufy_clean
+      domain: vacuum
+  fields:
+    scene_id:
+      name: Scenario ID
+      required: true
+      selector:
+        number:
+          mode: box
+
+station:
+  name: Station
+  description: Wash the mop, dry the mop, empty the dust, or stop the station.
+  target:
+    entity:
+      integration: eufy_clean
+      domain: vacuum
+  fields:
+    action:
+      name: Action
+      required: true
+      selector:
+        select:
+          options:
+            - wash
+            - dry
+            - empty
+            - stop
+
+remote_move:
+  name: Remote Move
+  description: Drive the robot. Use brake when the button is released.
+  target:
+    entity:
+      integration: eufy_clean
+      domain: vacuum
+  fields:
+    direction:
+      name: Direction
+      required: true
+      selector:
+        select:
+          options:
+            - forward
+            - back
+            - left
+            - right
+            - brake

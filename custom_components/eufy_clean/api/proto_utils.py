@@ -437,7 +437,51 @@ CONTROL_RESUME_TASK = 14
 CONTROL_START_SCENE_CLEAN = 24
 
 
-def encode_room_clean_command(room_ids: list[int], clean_times: int = 1) -> str:
+SUCTION_LEVELS = {"quiet": 0, "standard": 1, "turbo": 2, "max": 3}
+MOP_LEVELS = {"low": 0, "medium": 1, "high": 2}
+
+
+def encode_rooms_custom_command(
+    rooms: list[dict[str, Any]],
+    map_id: int = 0,
+) -> str:
+    """Store per-room suction and mop, then a custom room clean can use them.
+
+    Each room is ``{"id", "suction", "mop"}``. Suction is quiet, standard,
+    turbo, or max. Mop is low, medium, or high.
+    """
+    from ..proto.cloud import map_edit_pb2
+
+    req = map_edit_pb2.MapEditRequest()
+    req.method = map_edit_pb2.MapEditRequest.SET_ROOMS_CUSTOM
+    if map_id:
+        req.map_id = int(map_id)
+    custom = req.rooms_custom
+    custom.custom_enable.value = True
+    for order, room in enumerate(rooms, start=1):
+        ranked = custom.rooms_order.rooms.add()
+        ranked.id = int(room["id"])
+        ranked.order = order
+        parm = custom.rooms_parm.rooms.add()
+        parm.id = int(room["id"])
+        parm.custom.clean_type.value = {
+            "vacuum": CLEAN_TYPE_SWEEP_ONLY,
+            "mop": CLEAN_TYPE_MOP_ONLY,
+            "both": CLEAN_TYPE_SWEEP_AND_MOP,
+        }.get(str(room.get("kind") or "both"), CLEAN_TYPE_SWEEP_AND_MOP)
+        parm.custom.fan.suction = SUCTION_LEVELS[str(room["suction"])]
+        parm.custom.mop_mode.level = MOP_LEVELS[str(room["mop"])]
+        parm.custom.clean_times = 1
+    return encode_protobuf_message(req)
+
+
+def encode_room_clean_command(
+    room_ids: list[int],
+    clean_times: int = 1,
+    map_id: int = 0,
+    releases: int = 0,
+    customize: bool = False,
+) -> str:
     """
     Encode a SelectRoomsClean command for cleaning specific rooms.
 
@@ -459,6 +503,12 @@ def encode_room_clean_command(room_ids: list[int], clean_times: int = 1) -> str:
 
     # Field 2: clean_times
     select_rooms += encode_protobuf_field(2, 0, clean_times)
+    if map_id:
+        select_rooms += encode_protobuf_field(3, 0, int(map_id))
+    if releases:
+        select_rooms += encode_protobuf_field(4, 0, int(releases))
+    if customize:
+        select_rooms += encode_protobuf_field(5, 0, 1)
 
     # Build ModeCtrlRequest
     message = b""

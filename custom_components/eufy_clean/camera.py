@@ -388,4 +388,9 @@ class EufyCleanMapCamera(Camera):
             "zone_boxes": self._device.get_zone_boxes()
             if hasattr(self._device, "get_zone_boxes")
             else {"nogo": [], "nomop": []},
+            "scenes": [
+                {"scene_id": scene["scene_id"], "name": scene["name"]}
+                for scene in self._device.get_scenes()
+                if scene.get("enabled", True)
+            ],
         }

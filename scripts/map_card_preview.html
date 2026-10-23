@@ -1,0 +1,258 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Map card sketch</title>
+<style>
+  :root {
+    --blue: #03a9f4;
+    --ink: #1c1c1c;
+    --muted: #6b6b6b;
+    --line: #ececec;
+    --chip: #f2f2f2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #ececec;
+    font: 15px/1.3 system-ui, sans-serif;
+    color: var(--ink);
+  }
+  main { max-width: 420px; margin: 28px auto; padding: 0 16px 32px; }
+  p.hint { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+  .card {
+    background: #fff;
+    border-radius: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.12);
+    overflow: hidden;
+  }
+  .map { position: relative; background: #111; }
+  .map img { display: block; width: 100%; height: auto; }
+  .badge {
+    position: absolute;
+    width: 26px; height: 26px;
+    margin: -13px 0 0 -13px;
+    border-radius: 50%;
+    background: var(--blue);
+    color: #fff;
+    font-weight: 700;
+    display: grid;
+    place-items: center;
+  }
+  .badge[hidden], .draft[hidden] { display: none !important; }
+  .draft {
+    position: absolute;
+    border: 2px dashed var(--blue);
+    background: rgba(3,169,244,.2);
+  }
+  button, select { font: inherit; border: 0; color: var(--ink); background: transparent; }
+  .clean {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px 0;
+  }
+  .clean .label { color: var(--muted); font-size: 13px; }
+  .modes {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--chip);
+    border-radius: 10px;
+    flex: 1;
+  }
+  .modes button { flex: 1; padding: 7px 0; border-radius: 8px; }
+  .modes button.on { background: var(--blue); color: #fff; font-weight: 650; }
+  .station {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    background: #1c1c1c;
+    display: grid;
+    place-items: center;
+  }
+  .station img { width: 22px; height: 22px; object-fit: contain; display: block; }
+  .station.on { background: var(--blue); }
+  .body { padding: 10px 12px 8px; }
+  .levels { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+  .level { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 4px; }
+  .level b { flex: 1; min-width: 6em; align-self: center; }
+  label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+  select { background: var(--chip); border-radius: 8px; padding: 6px 8px; }
+  .start {
+    width: 100%;
+    padding: 12px;
+    border-radius: 12px;
+    background: var(--blue);
+    color: #fff;
+    font-weight: 700;
+  }
+  .row {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    padding: 12px 12px;
+    border-top: 1px solid var(--line);
+  }
+  .row span:last-child { color: var(--muted); }
+  .panel { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 12px; }
+  #station-panel { padding-top: 12px; }
+  .panel[hidden] { display: none; }
+  .panel button, .edit { background: var(--chip); border-radius: 999px; padding: 8px 12px; }
+  .edit.on { background: var(--blue); color: #fff; }
+  .advanced {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 12px 10px;
+  }
+  .advanced > button { color: var(--muted); font-size: 13px; }
+  .advanced-body { padding: 0 12px 12px; }
+  .advanced-body[hidden] { display: none; }
+  .sub { margin: 8px 0 4px; color: var(--muted); font-size: 12px; }
+  .pad { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 8px; }
+  .pad .sides { display: flex; gap: 72px; }
+  .pad button {
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background: var(--chip);
+    font-size: 18px;
+  }
+</style>
+<main>
+  <p class="hint">Sketch. Refresh after changes.</p>
+  <div class="card">
+    <div class="map">
+      <img src="/docs/map.png" alt="Map">
+      <div class="badge" data-show="rooms" style="left:22%;top:46%">1</div>
+      <div class="badge" data-show="rooms" style="left:46%;top:62%">2</div>
+      <div class="draft" data-show="area" style="left:58%;top:28%;width:22%;height:34%"></div>
+    </div>
+    <div class="clean">
+      <span class="label">Clean</span>
+      <div class="modes" id="modes"></div>
+      <button class="station" id="station" title="Station" aria-label="Station">
+        <img src="/apk/analysis/rn/drawable-xxhdpi/src_assets_light_images_ic_icon_hasbase.webp" alt="">
+      </button>
+    </div>
+    <div class="panel" id="station-panel" hidden></div>
+    <div class="body">
+      <div class="levels" id="levels"></div>
+      <button class="start" id="start">Start</button>
+    </div>
+    <button class="row" id="scenes-row"><span>Scenarios</span><span id="scenes-chev">▸</span></button>
+    <div class="panel" id="scenes" hidden></div>
+    <div class="advanced">
+      <button id="advanced" type="button">Advanced ▸</button>
+    </div>
+    <div class="advanced-body" id="advanced-body" hidden>
+      <button class="edit" id="edit-zones" type="button">Edit zones</button>
+      <div class="panel" id="zone-tools" hidden></div>
+      <div class="sub">Drive</div>
+      <div class="pad" id="pad"></div>
+    </div>
+  </div>
+</main>
+<script>
+  const modes = [["home", "Home"], ["rooms", "Rooms"], ["area", "Area"]];
+  let mode = "home";
+  let stationOpen = false;
+  let scenesOpen = false;
+  let advancedOpen = false;
+  let editingZones = false;
+  const jobs = {
+    rooms: [
+      { title: "1 Bedroom", kind: "both", suction: "turbo", mop: "medium" },
+      { title: "2 Hallway", kind: "vacuum", suction: "standard", mop: "low" },
+    ],
+    area: [
+      { title: "Area", kind: "mop", suction: "standard", mop: "high" },
+    ],
+  };
+
+  function chip(text) {
+    const button = document.createElement("button");
+    button.textContent = text;
+    return button;
+  }
+  function field(label, options, current, onChange) {
+    const box = document.createElement("label");
+    box.append(label);
+    const select = document.createElement("select");
+    options.forEach((option) => {
+      const item = document.createElement("option");
+      item.textContent = option;
+      item.selected = option.toLowerCase() === String(current).toLowerCase();
+      select.append(item);
+    });
+    if (onChange) {
+      select.onchange = () => onChange(select.value);
+    }
+    box.append(select);
+    return box;
+  }
+
+  function render() {
+    document.querySelectorAll("[data-show]").forEach((node) => {
+      node.hidden = node.dataset.show !== mode;
+    });
+    document.getElementById("modes").replaceChildren(...modes.map(([id, label]) => {
+      const button = document.createElement("button");
+      button.textContent = label;
+      button.className = id === mode ? "on" : "";
+      button.onclick = () => { mode = id; render(); };
+      return button;
+    }));
+    const station = document.getElementById("station");
+    station.className = "station" + (stationOpen ? " on" : "");
+    station.onclick = () => { stationOpen = !stationOpen; render(); };
+    const stationPanel = document.getElementById("station-panel");
+    stationPanel.hidden = !stationOpen;
+    stationPanel.replaceChildren(
+      chip("Wash mop"), chip("Dry mop"), chip("Empty dust"), chip("Stop")
+    );
+
+    const levelBox = document.getElementById("levels");
+    levelBox.replaceChildren();
+    (jobs[mode] || []).forEach((job) => {
+      const row = document.createElement("div");
+      row.className = "level";
+      const name = document.createElement("b");
+      name.textContent = job.title;
+      const kind = field("Clean", ["Vacuum", "Mop", "Both"], job.kind === "both" ? "both" : job.kind, (value) => {
+        job.kind = value === "Both" ? "both" : value.toLowerCase();
+        render();
+      });
+      row.append(name, kind);
+      if (job.kind !== "mop") {
+        row.append(field("Suction", ["Quiet", "Standard", "Turbo", "Max"], job.suction, (value) => {
+          job.suction = value.toLowerCase();
+        }));
+      }
+      if (job.kind !== "vacuum") {
+        row.append(field("Mop", ["Low", "Medium", "High"], job.mop, (value) => {
+          job.mop = value.toLowerCase();
+        }));
+      }
+      levelBox.append(row);
+    });
+
+    document.getElementById("scenes-chev").textContent = scenesOpen ? "▾" : "▸";
+    document.getElementById("scenes").hidden = !scenesOpen;
+    document.getElementById("scenes").replaceChildren(chip("After dinner"), chip("Kitchen"));
+    document.getElementById("scenes-row").onclick = () => { scenesOpen = !scenesOpen; render(); };
+
+    document.getElementById("advanced").textContent = "Advanced " + (advancedOpen ? "▾" : "▸");
+    document.getElementById("advanced").onclick = () => { advancedOpen = !advancedOpen; render(); };
+    document.getElementById("advanced-body").hidden = !advancedOpen;
+    const edit = document.getElementById("edit-zones");
+    edit.className = "edit" + (editingZones ? " on" : "");
+    edit.onclick = () => { editingZones = !editingZones; render(); };
+    const tools = document.getElementById("zone-tools");
+    tools.hidden = !editingZones;
+    tools.replaceChildren(chip("No-go"), chip("No-mop"), chip("Delete"), chip("Save"));
+    const pad = document.getElementById("pad");
+    const sides = document.createElement("div");
+    sides.className = "sides";
+    sides.append(chip("←"), chip("→"));
+    pad.replaceChildren(chip("↑"), sides);
+  }
+  render();
+</script>

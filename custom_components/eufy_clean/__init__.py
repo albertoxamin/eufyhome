@@ -38,6 +38,9 @@ SERVICE_CLEAN_SQUARE = "clean_square"
 SERVICE_CLEAN_AREA = "clean_area"
 SERVICE_MAP_POINT = "map_point"
 SERVICE_SET_ZONES = "set_zones"
+SERVICE_START_SCENE = "start_scene"
+SERVICE_STATION = "station"
+SERVICE_REMOTE = "remote_move"
 _CARD_KEY = "map_card"
 ATTR_ROOM_IDS = "room_ids"
 ATTR_CLEAN_TIMES = "clean_times"
@@ -106,9 +109,20 @@ async def async_register_map_card(hass: HomeAssistant) -> None:
     from homeassistant.components.frontend import add_extra_js_url
     from homeassistant.components.http import StaticPathConfig
 
-    card = Path(__file__).parent / "frontend" / "eufy-clean-map-card.js"
+    frontend = Path(__file__).parent / "frontend"
     await hass.http.async_register_static_paths(
-        [StaticPathConfig("/eufy_clean/eufy-clean-map-card.js", str(card), False)]
+        [
+            StaticPathConfig(
+                "/eufy_clean/eufy-clean-map-card.js",
+                str(frontend / "eufy-clean-map-card.js"),
+                False,
+            ),
+            StaticPathConfig(
+                "/eufy_clean/station.webp",
+                str(frontend / "station.webp"),
+                False,
+            ),
+        ]
     )
     add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js")
     hass.data.setdefault(DOMAIN, {})[_CARD_KEY] = True
@@ -157,7 +171,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
                             entity_entry.unique_id == device_id
                             or entity_entry.unique_id.startswith(device_id)
                         ):
-                            await device.clean_rooms(room_ids, clean_times)
+                            await device.clean_rooms(
+                                room_ids,
+                                clean_times,
+                                call.data.get("suction"),
+                                call.data.get("mop"),
+                                call.data.get("kind"),
+                            )
                             _LOGGER.info(
                                 "Started room cleaning for %s: rooms=%s",
                                 entity_id,
@@ -214,6 +234,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
             float(call.data["x2"]),
             float(call.data["y2"]),
             call.data.get(ATTR_CLEAN_TIMES, 1),
+            call.data.get("suction"),
+            call.data.get("mop"),
+            call.data.get("kind"),
         )
 
     async def handle_set_zones(call: ServiceCall) -> None:
@@ -225,6 +248,34 @@ async def async_register_services(hass: HomeAssistant) -> None:
             list(call.data.get("nogo") or []),
             list(call.data.get("nomop") or []),
         )
+
+    async def handle_start_scene(call: ServiceCall) -> None:
+        """Start one scenario stored on the robot."""
+        devices = _devices_for_call(hass, call)
+        if devices:
+            await devices[0].start_scene(int(call.data["scene_id"]))
+
+    async def handle_station(call: ServiceCall) -> None:
+        """Run one station control."""
+        devices = _devices_for_call(hass, call)
+        if not devices:
+            return
+        action = call.data["action"]
+        device = devices[0]
+        if action == "wash":
+            await device.station_wash_mop()
+        elif action == "dry":
+            await device.station_dry_mop()
+        elif action == "empty":
+            await device.station_empty_dust()
+        else:
+            await device.station_stop()
+
+    async def handle_remote(call: ServiceCall) -> None:
+        """Drive the robot one direction, or brake."""
+        devices = _devices_for_call(hass, call)
+        if devices:
+            await devices[0].remote_move(call.data["direction"])
 
     # Only register if not already registered
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAN_ROOMS):
@@ -239,6 +290,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.All(
                         vol.Coerce(int), vol.Range(min=1, max=3)
                     ),
+                    vol.Optional("suction"): [
+                        vol.In(("quiet", "standard", "turbo", "max"))
+                    ],
+                    vol.Optional("mop"): [vol.In(("low", "medium", "high"))],
+                    vol.Optional("kind"): [vol.In(("vacuum", "mop", "both"))],
                 }
             ),
         )
@@ -268,7 +324,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
     _unit = vol.All(vol.Coerce(float), vol.Range(min=0, max=1))
-    _rect = vol.All([_unit], vol.Length(min=4, max=4))
+    # A zone can sit slightly outside the cropped picture. Keep that corner.
+    _edge = vol.All(vol.Coerce(float), vol.Range(min=-5, max=5))
+    _rect = vol.All([_edge], vol.Length(min=4, max=4))
 
     if not hass.services.has_service(DOMAIN, SERVICE_MAP_POINT):
         hass.services.async_register(
@@ -300,6 +358,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.All(
                         vol.Coerce(int), vol.Range(min=1, max=3)
                     ),
+                    vol.Optional("suction"): vol.In(
+                        ("quiet", "standard", "turbo", "max")
+                    ),
+                    vol.Optional("mop"): vol.In(("low", "medium", "high")),
+                    vol.Optional("kind"): vol.In(("vacuum", "mop", "both")),
                 }
             ),
         )
@@ -314,6 +377,47 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     vol.Required("entity_id"): vol.Any(str, [str]),
                     vol.Optional("nogo", default=[]): [_rect],
                     vol.Optional("nomop", default=[]): [_rect],
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_START_SCENE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_START_SCENE,
+            handle_start_scene,
+            schema=vol.Schema(
+                {
+                    vol.Required("entity_id"): vol.Any(str, [str]),
+                    vol.Required("scene_id"): vol.Coerce(int),
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_STATION):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_STATION,
+            handle_station,
+            schema=vol.Schema(
+                {
+                    vol.Required("entity_id"): vol.Any(str, [str]),
+                    vol.Required("action"): vol.In(("wash", "dry", "empty", "stop")),
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_REMOTE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REMOTE,
+            handle_remote,
+            schema=vol.Schema(
+                {
+                    vol.Required("entity_id"): vol.Any(str, [str]),
+                    vol.Required("direction"): vol.In(
+                        ("forward", "back", "left", "right", "brake")
+                    ),
                 }
             ),
         )

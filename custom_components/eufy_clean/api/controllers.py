@@ -49,6 +49,7 @@ from .proto_utils import (
     encode_control_command,
     encode_dnd,
     encode_room_clean_command,
+    encode_rooms_custom_command,
     encode_scene_clean_command,
     encode_square_clean_command,
     encode_zone_clean_command,
@@ -411,8 +412,19 @@ class BaseDevice:
         else:
             _LOGGER.error("Invalid clean extent: %s", extent)
 
-    async def clean_rooms(self, room_ids: list[int], clean_times: int = 1) -> None:
-        """Start cleaning specific rooms by their IDs."""
+    async def clean_rooms(
+        self,
+        room_ids: list[int],
+        clean_times: int = 1,
+        suction: list[str] | None = None,
+        mop: list[str] | None = None,
+        kind: list[str] | None = None,
+    ) -> None:
+        """Start cleaning specific rooms by their IDs.
+
+        When ``suction`` and ``mop`` match ``room_ids``, each room keeps its
+        own level and the clean runs in custom mode.
+        """
         if not self._novel_api:
             _LOGGER.warning("Room cleaning not supported on legacy devices")
             return
@@ -421,7 +433,22 @@ class BaseDevice:
             _LOGGER.error("No room IDs provided")
             return
 
-        command = encode_room_clean_command(room_ids, clean_times)
+        customize = bool(suction and mop and len(suction) == len(mop) == len(room_ids))
+        map_id, releases = self._floor_ids() if customize else (0, 0)
+        if customize:
+            rooms = [
+                {
+                    "id": room_id,
+                    "suction": suction[index],
+                    "mop": mop[index],
+                    "kind": kind[index] if kind and index < len(kind) else "both",
+                }
+                for index, room_id in enumerate(room_ids)
+            ]
+            await self.send_command({"170": encode_rooms_custom_command(rooms, map_id)})
+        command = encode_room_clean_command(
+            room_ids, clean_times, map_id, releases, customize
+        )
         await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         _LOGGER.info("Started cleaning rooms: %s", room_ids)
 
@@ -470,7 +497,15 @@ class BaseDevice:
         return handler.picture_zone_boxes()
 
     async def clean_area(
-        self, x1: float, y1: float, x2: float, y2: float, clean_times: int = 1
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        clean_times: int = 1,
+        suction: str | None = None,
+        mop: str | None = None,
+        kind: str | None = None,
     ) -> None:
         """Start cleaning the rectangle drawn on the picture."""
         if not self._novel_api:
@@ -481,6 +516,15 @@ class BaseDevice:
         if not quad:
             _LOGGER.error("No map frame for area clean")
             return
+        clean_type = {"vacuum": "sweep_only", "mop": "mop_only", "both": "sweep_and_mop"}.get(
+            kind or ""
+        )
+        if clean_type:
+            await self.set_clean_type(clean_type)
+        if suction and kind != "mop":
+            await self.set_fan_speed(suction)
+        if mop and kind != "vacuum":
+            await self.set_mop_level(mop)
         map_id, releases = self._floor_ids()
         command = encode_zone_clean_command(quad, clean_times, map_id, releases)
         await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
@@ -536,6 +580,20 @@ class BaseDevice:
         if not raw or not isinstance(raw, str):
             return []
         return decode_scene_list(raw)
+
+    async def remote_move(self, direction: str) -> None:
+        """Drive the robot. Releasing a direction sends Brake."""
+        word = {
+            "brake": "Brake",
+            "forward": "Forward",
+            "back": "Back",
+            "left": "Left",
+            "right": "Right",
+        }.get(direction)
+        if word is None:
+            _LOGGER.error("Invalid remote direction: %s", direction)
+            return
+        await self.send_command({self._dps_map.get("DIRECTION", "155"): word})
 
     async def start_scene(self, scene_id: int) -> None:
         """Start a cleaning scene by its ID."""

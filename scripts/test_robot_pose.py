@@ -229,6 +229,28 @@ def main() -> None:
     assert edit.restricted_zone.forbidden_zones[0].p2.x == 10
     assert edit.restricted_zone.ban_mop_zones[0].p2.y == 40
     assert edit.map_id == 7
+    from eufy_clean.api.proto_utils import (
+        encode_room_clean_command,
+        encode_rooms_custom_command,
+    )
+
+    custom_raw = base64.b64decode(
+        encode_rooms_custom_command([{"id": 2, "suction": "max", "mop": "low"}], map_id=7)
+    )
+    clen, cpos = decode_varint(custom_raw, 0)
+    custom = map_edit_pb2.MapEditRequest()
+    custom.ParseFromString(custom_raw[cpos:])
+    assert custom.method == map_edit_pb2.MapEditRequest.SET_ROOMS_CUSTOM
+    parm = custom.rooms_custom.rooms_parm.rooms[0]
+    assert parm.id == 2
+    assert parm.custom.fan.suction == 3
+    assert parm.custom.mop_mode.level == 0
+    room_raw = base64.b64decode(encode_room_clean_command([2], customize=True))
+    rlen, rpos = decode_varint(room_raw, 0)
+    room_req = control_pb2.ModeCtrlRequest()
+    room_req.ParseFromString(room_raw[rpos:])
+    assert room_req.select_rooms_clean.mode == control_pb2.SelectRoomsClean.CUSTOMIZE
+    assert room_req.select_rooms_clean.rooms[0].order == 1
     print("ok", live.robot_pixel, "dock", live._dock_pixel)
 
 

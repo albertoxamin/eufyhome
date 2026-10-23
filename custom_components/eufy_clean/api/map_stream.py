@@ -650,8 +650,8 @@ def world_to_picture(frame: MapFrame, wx: int, wy: int) -> tuple[float, float]:
 
 def picture_to_source(frame: MapFrame, nx: float, ny: float) -> tuple[int, int]:
     """Picture fraction to a source-map pixel."""
-    fx = min(max(float(nx), 0.0), 1.0) * frame.image_w
-    fy = min(max(float(ny), 0.0), 1.0) * frame.image_h
+    fx = float(nx) * frame.image_w
+    fy = float(ny) * frame.image_h
     ux = int(round(fx)) + frame.crop_left
     uy = int(round(fy)) + frame.crop_top
     sx, sy = _unrotated_point(ux, uy, frame.pre_w, frame.pre_h, frame.rotation)
