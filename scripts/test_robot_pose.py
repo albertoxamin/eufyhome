@@ -19,6 +19,7 @@ from eufy_clean.api.map_stream import (  # noqa: E402
     _rotated_point,
     render_settings_from_options,
     _append_path_point,
+    _crop_to_content,
     _floor_leaked_past_walls,
     _map_pixel_value,
     _exact_path_point,
@@ -131,6 +132,12 @@ def main() -> None:
     leaked = _floor_leaked_past_walls(bytes(raw), side, side, None, 0, 0, 0, 0)
     assert leaked[4 * side + 8] and leaked[4 * side + 9]
     assert not leaked[4 * side + 4]
+    from PIL import Image as _Image
+
+    canvas = _Image.new("RGB", (80, 60), (30, 30, 30))
+    canvas.paste((100, 150, 200), (30, 20, 50, 40))
+    cropped = _crop_to_content(canvas, (30, 30, 30))
+    assert cropped.size == (20 + 32, 20 + 32)
     tight = render_settings_from_options({"icon_scale": 0.01, "path_spacing": 9})["style"]
     assert tight["icon_scale"] == 0.01
     assert tight["path_spacing"] == 8.0

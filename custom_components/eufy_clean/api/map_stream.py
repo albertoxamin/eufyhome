@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import colorsys
 import io
 import json
 import logging
@@ -178,6 +179,14 @@ def _visited_path_pixels(map_data: MapData) -> list[tuple[int, int]]:
             if touches_floor:
                 points.append((px_x, py))
     return points
+
+
+def _darker_room_color(rgb: tuple[int, int, int], value_scale: float = 0.70) -> tuple[int, int, int]:
+    """Same hue and saturation as the room, with a lower HSV value."""
+    red, green, blue = (channel / 255 for channel in rgb)
+    hue, saturation, value = colorsys.rgb_to_hsv(red, green, blue)
+    red, green, blue = colorsys.hsv_to_rgb(hue, saturation, value * value_scale)
+    return tuple(int(round(channel * 255)) for channel in (red, green, blue))
 
 
 def _is_valid_room_id(rid: int) -> bool:
@@ -582,6 +591,32 @@ def _blit_icon(img: Image.Image, icon: Image.Image, cx: int, cy: int, width: int
     return base.convert("RGB")
 
 
+def _crop_to_content(
+    img: Image.Image, background: tuple[int, int, int], margin: int = 16
+) -> Image.Image:
+    """Trim empty margin so at most ``margin`` pixels remain past the rooms."""
+    width, height = img.size
+    min_x, min_y, max_x, max_y = width, height, -1, -1
+    for index, pixel in enumerate(img.getdata()):
+        if pixel == background:
+            continue
+        x, y = index % width, index // width
+        min_x = min(min_x, x)
+        min_y = min(min_y, y)
+        max_x = max(max_x, x)
+        max_y = max(max_y, y)
+    if max_x < 0:
+        return img
+    return img.crop(
+        (
+            max(0, min_x - margin),
+            max(0, min_y - margin),
+            min(width, max_x + margin + 1),
+            min(height, max_y + margin + 1),
+        )
+    )
+
+
 def _rotated_point(x: int, y: int, width: int, height: int, degrees: int) -> tuple[int, int]:
     """Map a point through the same clockwise turn as ``_rotate_image``."""
     degrees = int(degrees) % 360
@@ -652,8 +687,6 @@ def render_map_png(
     show_zones = bool(style.get("show_zones", True))
     render_scale = float(style.get("render_scale") or 1)
     render_scale = min(max(render_scale, 1.0), 6.0)
-    label_color = tuple(style["label_color"]) if style.get("label_color") else (30, 30, 30)
-    label_bg = tuple(style["label_bg"]) if style.get("label_bg") else (255, 255, 255)
     label_size = int(style.get("label_size") or 9)
 
     width, height = map_data.width, map_data.height
@@ -719,10 +752,14 @@ def render_map_png(
                 colors.append(color)
                 if _has_room_names and rid > 0 and rid in map_data.room_names:
                     if rid not in src_centroids:
-                        src_centroids[rid] = [0, 0, 0]
+                        src_centroids[rid] = [0, 0, 0, px_x, py, px_x, py]
                     src_centroids[rid][0] += px_x
                     src_centroids[rid][1] += py
                     src_centroids[rid][2] += 1
+                    src_centroids[rid][3] = min(src_centroids[rid][3], px_x)
+                    src_centroids[rid][4] = min(src_centroids[rid][4], py)
+                    src_centroids[rid][5] = max(src_centroids[rid][5], px_x)
+                    src_centroids[rid][6] = max(src_centroids[rid][6], py)
     else:
         for i in range(width * height):
             byte_pos = i >> 2
@@ -989,37 +1026,44 @@ def render_map_png(
                 _stamp(ox, oy, (100, 75, 0))
 
     if show_labels and src_centroids:
-        label_px = max(8, round(label_size * render_scale))
+        label_px = max(6, round(label_size * render_scale * 0.85))
         try:
             font: ImageFont.ImageFont | ImageFont.FreeTypeFont = ImageFont.load_default(
                 size=label_px
             )
         except TypeError:
             font = ImageFont.load_default()
-        pad = max(1, round(2 * render_scale))
         for rid, vals in src_centroids.items():
             if vals[2] == 0:
                 continue
-            label = map_data.room_names[rid].upper()
+            label = map_data.room_names[rid]
             if not label:
                 continue
+            room_color = room_palette[1 + (rid - 1) % (len(room_palette) - 1)]
             ox, oy = _upright(*_to_out(vals[0] // vals[2], vals[1] // vals[2]))
             bbox = draw.textbbox((0, 0), label, font=font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-            draw.rectangle(
-                [
-                    (ox - tw // 2 - pad, oy - th // 2 - pad // 2),
-                    (ox + tw // 2 + pad, oy + th // 2 + pad // 2),
-                ],
-                fill=label_bg,
-            )
-            draw.text(
-                (ox - tw // 2 - bbox[0], oy - th // 2 - bbox[1]),
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+            corners = [
+                _upright(*_to_out(vals[3], vals[4])),
+                _upright(*_to_out(vals[5], vals[4])),
+                _upright(*_to_out(vals[3], vals[6])),
+                _upright(*_to_out(vals[5], vals[6])),
+            ]
+            room_w = max(point[0] for point in corners) - min(point[0] for point in corners)
+            glyph = Image.new("RGBA", (max(1, text_w + 2), max(1, text_h + 2)), (0, 0, 0, 0))
+            ImageDraw.Draw(glyph).text(
+                (1 - bbox[0], 1 - bbox[1]),
                 label,
-                fill=label_color,
                 font=font,
+                fill=_darker_room_color(room_color),
             )
+            if text_w > room_w:
+                glyph = glyph.rotate(90, expand=True, resample=Image.Resampling.BICUBIC)
+            base = img.convert("RGBA")
+            base.paste(glyph, (ox - glyph.width // 2, oy - glyph.height // 2), glyph)
+            img = base.convert("RGB")
+            draw = ImageDraw.Draw(img)
 
     # ------------------------------------------------------------------
     # Step 7 — robot marker + status badge
@@ -1062,6 +1106,31 @@ def render_map_png(
                 bpy = by + round(oy2 * render_scale)
                 _circle(bpx, bpy, max(0.6, 0.45 * render_scale), (20, 20, 20))
 
+    if src_centroids:
+        corners = []
+        for vals in src_centroids.values():
+            if len(vals) < 7 or vals[2] == 0:
+                continue
+            corners.extend(
+                _upright(*_to_out(x, y))
+                for x, y in (
+                    (vals[3], vals[4]),
+                    (vals[5], vals[4]),
+                    (vals[3], vals[6]),
+                    (vals[5], vals[6]),
+                )
+            )
+        if corners:
+            img = img.crop(
+                (
+                    max(0, min(point[0] for point in corners) - 16),
+                    max(0, min(point[1] for point in corners) - 16),
+                    min(img.width, max(point[0] for point in corners) + 17),
+                    min(img.height, max(point[1] for point in corners) + 17),
+                )
+            )
+    else:
+        img = _crop_to_content(img, unknown)
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=False, compress_level=3)
     return buf.getvalue()
