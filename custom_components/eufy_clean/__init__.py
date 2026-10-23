@@ -124,7 +124,7 @@ async def async_register_map_card(hass: HomeAssistant) -> None:
             ),
         ]
     )
-    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js?v=3")
+    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js?v=5")
     hass.data.setdefault(DOMAIN, {})[_CARD_KEY] = True
 
 
@@ -275,7 +275,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
         """Drive the robot one direction, or brake."""
         devices = _devices_for_call(hass, call)
         if devices:
-            await devices[0].remote_move(call.data["direction"])
+            await devices[0].remote_move(
+                call.data["direction"], bool(call.data.get("start"))
+            )
 
     # Only register if not already registered
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAN_ROOMS):
@@ -418,6 +420,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     vol.Required("direction"): vol.In(
                         ("forward", "back", "left", "right", "brake")
                     ),
+                    vol.Optional("start", default=False): bool,
                 }
             ),
         )

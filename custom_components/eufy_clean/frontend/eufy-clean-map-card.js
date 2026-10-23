@@ -151,7 +151,7 @@ class EufyCleanMapCard extends HTMLElement {
       this._advancedOpen = !this._advancedOpen;
       if (!this._advancedOpen) {
         this._editingZones = false;
-        this._remote("brake");
+        this._remote("brake", true);
       }
       this._paint();
     });
@@ -172,7 +172,7 @@ class EufyCleanMapCard extends HTMLElement {
     const sides = document.createElement("div");
     sides.className = "sides";
     sides.append(this._hold("←", "left"), this._hold("→", "right"));
-    this._pad.append(this._hold("↑", "forward"), sides);
+    this._pad.append(this._hold("↑", "forward"), sides, this._hold("↓", "back"));
     this._start.addEventListener("click", () => this._startClean());
     this._svg.addEventListener("pointerdown", (event) => this._down(event));
     this._svg.addEventListener("pointermove", (event) => this._move(event));
@@ -588,12 +588,12 @@ class EufyCleanMapCard extends HTMLElement {
     const button = document.createElement("button");
     button.textContent = label;
     let timer = null;
-    const send = () => this._remote(direction);
+    const send = (start) => this._remote(direction, start);
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       button.setPointerCapture(event.pointerId);
-      send();
-      timer = setInterval(send, 200);
+      send(true);
+      timer = setInterval(() => send(false), 200);
     });
     const stop = () => {
       if (!timer) {
@@ -601,7 +601,7 @@ class EufyCleanMapCard extends HTMLElement {
       }
       clearInterval(timer);
       timer = null;
-      this._remote("brake");
+      this._remote("brake", false);
     };
     button.addEventListener("pointerup", stop);
     button.addEventListener("pointercancel", stop);
@@ -615,11 +615,15 @@ class EufyCleanMapCard extends HTMLElement {
     });
   }
 
-  _remote(direction) {
-    return this._hass.callService("eufy_clean", "remote_move", {
+  _remote(direction, start) {
+    const data = {
       entity_id: this._config.vacuum,
       direction: direction,
-    });
+    };
+    if (start) {
+      data.start = true;
+    }
+    return this._hass.callService("eufy_clean", "remote_move", data);
   }
 }
 

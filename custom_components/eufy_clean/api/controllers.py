@@ -581,19 +581,25 @@ class BaseDevice:
             return []
         return decode_scene_list(raw)
 
-    async def remote_move(self, direction: str) -> None:
-        """Drive the robot. Releasing a direction sends Brake."""
-        word = {
-            "brake": "Brake",
-            "forward": "Forward",
-            "back": "Back",
-            "left": "Left",
-            "right": "Right",
-        }.get(direction)
-        if word is None:
+    async def remote_move(self, direction: str, start: bool = False) -> None:
+        """Drive the robot. The first press also enters manual mode.
+
+        DPS 155 is a RemoteCtrl protobuf. Wheels run after START_RC_CLEAN.
+        """
+        try:
+            value = {"brake": 0, "forward": 1, "back": 2, "left": 3, "right": 4}[direction]
+        except KeyError:
             _LOGGER.error("Invalid remote direction: %s", direction)
             return
-        await self.send_command({self._dps_map.get("DIRECTION", "155"): word})
+        if start and direction != "brake":
+            await self.send_command(
+                {self._dps_map["PLAY_PAUSE"]: encode_control_command(5)}
+            )
+        await self.send_command({self._dps_map.get("DIRECTION", "155"): value})
+        if direction == "brake" and start:
+            await self.send_command(
+                {self._dps_map["PLAY_PAUSE"]: encode_control_command(16)}
+            )
 
     async def start_scene(self, scene_id: int) -> None:
         """Start a cleaning scene by its ID."""
