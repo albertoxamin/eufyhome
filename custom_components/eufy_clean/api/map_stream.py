@@ -105,6 +105,7 @@ def render_settings_from_options(options: Mapping[str, Any] | None) -> dict[str,
     }
 
 _MAX_TRAIL_POINTS = 8000
+_PathPoint = tuple[int, int, bool, bool]
 
 # Special room-mask ids from p2pdata.proto MapPixels encoding.
 _ROOM_MASK_GAP = 61
@@ -779,7 +780,7 @@ def render_map_png(
     map_data: MapData,
     robot_pixel: tuple[int, int] | None = None,
     robot_trail: list[tuple[int, int]] | None = None,
-    cleaning_path: list[tuple[int, int, bool]] | None = None,
+    cleaning_path: list[_PathPoint] | None = None,
     dock_pixel: tuple[int, int] | None = None,
     robot_status: str | None = None,
     max_px: int = _MAX_PNG_PX,
@@ -1508,7 +1509,7 @@ def _exact_path_point(value: bytes) -> tuple[int, int] | None:
 
 
 def _append_path_point(
-    points: list[tuple[int, int, bool]],
+    points: list[_PathPoint],
     xy: int,
     flags: int,
 ) -> None:
@@ -1527,7 +1528,7 @@ def _append_path_point(
     points.append((x, y, break_before, travel))
 
 
-def _collect_path_points(data: bytes, out: list[tuple[int, int, bool]]) -> None:
+def _collect_path_points(data: bytes, out: list[_PathPoint]) -> None:
     from .proto_utils import decode_protobuf_field
 
     pos = 0
@@ -1546,9 +1547,9 @@ def _collect_path_points(data: bytes, out: list[tuple[int, int, bool]]) -> None:
             _collect_path_points(value, out)
 
 
-def try_extract_path_points(hex_data: str) -> list[tuple[int, int, bool]] | None:
-    """Decode a biz/ path frame. Returns [(x_cm, y_cm, break_before), ...]."""
-    points: list[tuple[int, int, bool]] = []
+def try_extract_path_points(hex_data: str) -> list[_PathPoint] | None:
+    """Decode a biz/ path frame. Returns [(x_cm, y_cm, break_before, travel), ...]."""
+    points: list[_PathPoint] = []
     for proto_bytes in _hex_proto_candidates(hex_data):
         exact = _exact_path_point(proto_bytes)
         if exact is not None:
@@ -1676,7 +1677,7 @@ class MapStreamHandler:
         self._pending_pose: tuple[int, int] | None = None
         self._robot_trail: list[tuple[int, int] | tuple[int, int, bool]] = []
         self._path_travel = False
-        self._cleaning_path: list[tuple[int, int, bool]] = []
+        self._cleaning_path: list[_PathPoint] = []
         self._dock_pixel: tuple[int, int] | None = None
         self._tracking_active = False
         self._rotation = int(rotation) % 360
@@ -1736,7 +1737,7 @@ class MapStreamHandler:
             return False
         robot_px, x_cm, y_cm = placed
         self._pose_cm = (x_cm, y_cm)
-        if any(abs(x) > 4000 or abs(y) > 4000 for x, y, _break in self._cleaning_path):
+        if any(abs(x) > 4000 or abs(y) > 4000 for x, y, *_rest in self._cleaning_path):
             self._cleaning_path.clear()
         before = len(self._robot_trail)
         self._append_trail_point(robot_px)
@@ -1750,13 +1751,13 @@ class MapStreamHandler:
             return True
         return False
 
-    def _ingest_path_points(self, path_pts: list[tuple[int, int, bool]]) -> bool:
+    def _ingest_path_points(self, path_pts: list[_PathPoint]) -> bool:
         """Merge streamed path points and re-render when possible."""
         if not path_pts:
             return False
         if self.map_data is not None:
             on_map = sum(
-                1 for x_cm, y_cm, _break in path_pts
+                1 for x_cm, y_cm, *_rest in path_pts
                 if _pose_to_pixel(self.map_data, x_cm, y_cm) is not None
             )
             # One in-bounds number inside a frame of garbage is not the robot.
