@@ -1,6 +1,9 @@
 import json
 
-from custom_components.eufy_clean.api.map_stream import MapStreamHandler
+from custom_components.eufy_clean.api.map_stream import (
+    MapStreamHandler,
+    try_extract_path_points,
+)
 from custom_components.eufy_clean.api.proto_utils import encode_varint
 from custom_components.eufy_clean.proto.cloud import stream_pb2
 
@@ -62,6 +65,17 @@ def _metadata_frame() -> str:
     message.chan_ids.dynamic_data = POSE_CHANNEL
     message.chan_ids.map_data = MAP_CHANNEL
     return _frame(message)
+
+
+def test_map_frame_is_decoded_when_path_parser_also_matches_it():
+    frame = _map_frame()
+    assert try_extract_path_points(frame)
+    handler = MapStreamHandler()
+
+    handler.handle_biz_payload(_biz(MAP_CHANNEL, frame))
+
+    assert handler.map_data is not None
+    assert handler.map_channel_id == MAP_CHANNEL
 
 
 def test_pose_after_stored_path_points_places_the_robot():

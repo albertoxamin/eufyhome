@@ -1920,11 +1920,22 @@ class MapStreamHandler:
                 return self._ingest_path_points(path_pts)
             return False
 
-        if self._frame_matches_channel(channel_id, self._path_channel_id):
+        is_map_candidate = (
+            self.map_channel_id is None
+            or channel_id == self.map_channel_id
+            or len(hex_data) > 15000
+        )
+        map_data = try_extract_map_data(hex_data) if is_map_candidate else None
+
+        if map_data is None and self._frame_matches_channel(
+            channel_id, self._path_channel_id
+        ):
             if path_pts := try_extract_path_points(hex_data):
                 return self._ingest_path_points(path_pts)
 
-        if self._frame_matches_channel(channel_id, self._dynamic_channel_id):
+        if map_data is None and self._frame_matches_channel(
+            channel_id, self._dynamic_channel_id
+        ):
             if pose := try_decode_as_dynamic_data(hex_data):
                 return self._ingest_pose(pose[0], pose[1])
 
@@ -1935,17 +1946,6 @@ class MapStreamHandler:
                 return self._ingest_pose(pose[0], pose[1])
             return False
 
-        is_map_candidate = (
-            self.map_channel_id is None
-            or channel_id == self.map_channel_id
-            or len(hex_data) > 15000
-        )
-        if not is_map_candidate:
-            if pose := try_decode_as_dynamic_data(hex_data):
-                return self._ingest_pose(pose[0], pose[1])
-            return False
-
-        map_data = try_extract_map_data(hex_data)
         if map_data is None:
             if pose := try_decode_as_dynamic_data(hex_data):
                 return self._ingest_pose(pose[0], pose[1])
