@@ -213,7 +213,11 @@ def main() -> None:
     placed._robot_pixel = (20, 40)
     assert placed.robot_room() == (1, "A")
     placed._robot_pixel = (0, 0)
-    assert placed.robot_room() is None
+    assert placed.robot_room() == (1, "A")
+    fresh = MapStreamHandler()
+    fresh.map_data = tiny
+    fresh._robot_pixel = (0, 0)
+    assert fresh.robot_room() is None
     quad = picture_rect_to_quad(frame, 0.4, 0.4, 0.6, 0.6)
     assert quad[0][0] < quad[1][0] and quad[0][1] < quad[2][1]
 

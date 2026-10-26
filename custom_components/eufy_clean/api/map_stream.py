@@ -1673,6 +1673,7 @@ class MapStreamHandler:
         self.map_channel_id: int | None = None
         self.last_seen_maps: dict[int, str] = {}
         self._robot_pixel: tuple[int, int] | None = None
+        self._held_room_id: int | None = None
         self._pose_cm: tuple[int, int] | None = None
         self._pending_pose: tuple[int, int] | None = None
         self._robot_trail: list[tuple[int, int] | tuple[int, int, bool]] = []
@@ -2017,14 +2018,18 @@ class MapStreamHandler:
         return self._robot_pixel
 
     def robot_room(self) -> tuple[int, str] | None:
-        """Room under the robot, from the room mask. None on a wall or off the map."""
+        """Room under the robot. A wall or doorway keeps the last real room."""
         pixel = self._robot_pixel
-        if pixel is None or self.map_data is None:
+        if pixel is not None and self.map_data is not None:
+            rid, _sub = _room_mask_at(self.map_data, pixel[0], pixel[1])
+            if _is_valid_room_id(rid):
+                self._held_room_id = rid
+        if self._held_room_id is None:
             return None
-        rid, _sub = _room_mask_at(self.map_data, pixel[0], pixel[1])
-        if not _is_valid_room_id(rid):
-            return None
-        return rid, self.get_room_names().get(rid, f"Room {rid}")
+        return (
+            self._held_room_id,
+            self.get_room_names().get(self._held_room_id, f"Room {self._held_room_id}"),
+        )
 
     def status_text(self) -> str:
         """One line for the live map page."""
