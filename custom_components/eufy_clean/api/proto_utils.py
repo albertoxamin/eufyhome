@@ -712,6 +712,22 @@ def encode_scene_clean_command(scene_id: int) -> str:
     return base64.b64encode(result).decode()
 
 
+def _dnd_clock(message: bytes) -> tuple[int | None, int | None]:
+    """Read hour (field 1) and minute (field 2) from one Do Not Disturb time."""
+    hour: int | None = None
+    minute: int | None = None
+    pos = 0
+    while pos < len(message):
+        field, _wire, value, pos = decode_protobuf_field(message, pos)
+        if field is None:
+            break
+        if field == 1 and isinstance(value, int):
+            hour = value
+        elif field == 2 and isinstance(value, int):
+            minute = value
+    return hour, minute
+
+
 def decode_dnd(base64_value: str) -> dict[str, Any]:
     """
     Decode DND (Do Not Disturb) protobuf from DPS 157.
@@ -719,12 +735,18 @@ def decode_dnd(base64_value: str) -> dict[str, Any]:
     Structure:
     - field 2 (message):
       - field 1 (message): { field 1: enabled (varint, 1=on, 0=off) }
-      - field 2 (message): { field 1: start_hour (varint) }
-      - field 3 (message): { field 1: end_hour (varint) }
+      - field 2 (message): { field 1: start_hour, field 2: start_minute }
+      - field 3 (message): { field 1: end_hour, field 2: end_minute }
 
-    Returns {"enabled": bool, "start_hour": int, "end_hour": int}.
+    A missing minute stays 0.
     """
-    result = {"enabled": False, "start_hour": 22, "end_hour": 8}
+    result = {
+        "enabled": False,
+        "start_hour": 22,
+        "start_minute": 0,
+        "end_hour": 8,
+        "end_minute": 0,
+    }
     if not base64_value or not isinstance(base64_value, str):
         return result
     try:
@@ -754,13 +776,17 @@ def decode_dnd(base64_value: str) -> dict[str, Any]:
                         if vf == 1:
                             result["enabled"] = vv != 0
                     elif f == 2 and wt == 2 and isinstance(v, bytes):
-                        vf, _, vv, _ = decode_protobuf_field(v, 0)
-                        if vf == 1:
-                            result["start_hour"] = vv
+                        hour, minute = _dnd_clock(v)
+                        if hour is not None:
+                            result["start_hour"] = hour
+                        if minute is not None:
+                            result["start_minute"] = minute
                     elif f == 3 and wt == 2 and isinstance(v, bytes):
-                        vf, _, vv, _ = decode_protobuf_field(v, 0)
-                        if vf == 1:
-                            result["end_hour"] = vv
+                        hour, minute = _dnd_clock(v)
+                        if hour is not None:
+                            result["end_hour"] = hour
+                        if minute is not None:
+                            result["end_minute"] = minute
 
         return result
     except Exception as err:
@@ -768,7 +794,13 @@ def decode_dnd(base64_value: str) -> dict[str, Any]:
         return result
 
 
-def encode_dnd(enabled: bool, start_hour: int, end_hour: int) -> str:
+def encode_dnd(
+    enabled: bool,
+    start_hour: int,
+    end_hour: int,
+    start_minute: int = 0,
+    end_minute: int = 0,
+) -> str:
     """
     Encode DND protobuf for DPS 157.
 
@@ -776,12 +808,16 @@ def encode_dnd(enabled: bool, start_hour: int, end_hour: int) -> str:
     field 1: empty string
     field 2 (message):
       field 1 (message): { field 1: enabled (0 or 1) }
-      field 2 (message): { field 1: start_hour }
-      field 3 (message): { field 1: end_hour }
+      field 2 (message): { field 1: start_hour, field 2: start_minute }
+      field 3 (message): { field 1: end_hour, field 2: end_minute }
     """
     enabled_msg = encode_protobuf_field(1, 0, 1 if enabled else 0)
-    start_msg = encode_protobuf_field(1, 0, start_hour)
-    end_msg = encode_protobuf_field(1, 0, end_hour)
+    start_msg = encode_protobuf_field(1, 0, start_hour) + encode_protobuf_field(
+        2, 0, start_minute
+    )
+    end_msg = encode_protobuf_field(1, 0, end_hour) + encode_protobuf_field(
+        2, 0, end_minute
+    )
 
     schedule = b""
     schedule += encode_protobuf_field(1, 2, enabled_msg)

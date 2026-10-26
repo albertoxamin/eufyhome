@@ -2016,14 +2016,22 @@ class MapStreamHandler:
         """Last known robot position in map pixel coordinates."""
         return self._robot_pixel
 
+    def robot_room(self) -> tuple[int, str] | None:
+        """Room under the robot, from the room mask. None on a wall or off the map."""
+        pixel = self._robot_pixel
+        if pixel is None or self.map_data is None:
+            return None
+        rid, _sub = _room_mask_at(self.map_data, pixel[0], pixel[1])
+        if not _is_valid_room_id(rid):
+            return None
+        return rid, self.get_room_names().get(rid, f"Room {rid}")
+
     def status_text(self) -> str:
         """One line for the live map page."""
         pixel = self._robot_pixel
         pose = self._pose_cm
-        room = ""
-        if pixel is not None and self.map_data is not None:
-            rid, _sub = _room_mask_at(self.map_data, pixel[0], pixel[1])
-            room = self.get_room_names().get(rid, "")
+        found = self.robot_room()
+        room = found[1] if found else ""
         pixel_text = f"{pixel[0]},{pixel[1]}" if pixel else "none"
         pose_text = f"{pose[0]},{pose[1]} cm" if pose else "no pose yet"
         dock = self._dock_pixel

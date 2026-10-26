@@ -31,6 +31,7 @@ PLATFORMS: list[Platform] = [
     Platform.NUMBER,
     Platform.SCENE,
     Platform.SWITCH,
+    Platform.TIME,
 ]
 
 SERVICE_CLEAN_ROOMS = "clean_rooms"

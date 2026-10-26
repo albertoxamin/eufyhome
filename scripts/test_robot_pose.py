@@ -208,6 +208,12 @@ def main() -> None:
     assert abs(back[0] - wx) <= frame.resolution
     assert abs(back[1] - wy) <= frame.resolution
     assert picture_room_id(tiny, frame, *world_to_picture(frame, wx, wy)) == 1
+    placed = MapStreamHandler()
+    placed.map_data = tiny
+    placed._robot_pixel = (20, 40)
+    assert placed.robot_room() == (1, "A")
+    placed._robot_pixel = (0, 0)
+    assert placed.robot_room() is None
     quad = picture_rect_to_quad(frame, 0.4, 0.4, 0.6, 0.6)
     assert quad[0][0] < quad[1][0] and quad[0][1] < quad[2][1]
 
@@ -230,6 +236,8 @@ def main() -> None:
     assert edit.restricted_zone.ban_mop_zones[0].p2.y == 40
     assert edit.map_id == 7
     from eufy_clean.api.proto_utils import (
+        decode_dnd,
+        encode_dnd,
         encode_room_clean_command,
         encode_rooms_custom_command,
     )
@@ -251,6 +259,10 @@ def main() -> None:
     room_req.ParseFromString(room_raw[rpos:])
     assert room_req.select_rooms_clean.mode == control_pb2.SelectRoomsClean.CUSTOMIZE
     assert room_req.select_rooms_clean.rooms[0].order == 1
+    schedule = decode_dnd(encode_dnd(True, 22, 8, 30, 15))
+    assert schedule["enabled"] is True
+    assert (schedule["start_hour"], schedule["start_minute"]) == (22, 30)
+    assert (schedule["end_hour"], schedule["end_minute"]) == (8, 15)
     print("ok", live.robot_pixel, "dock", live._dock_pixel)
 
 

@@ -85,20 +85,34 @@ class EufyCleanDndSwitch(
             dnd = self.coordinator.data[self._device.device_id].get("dnd", {})
             return {
                 "start_hour": dnd.get("start_hour", 22),
+                "start_minute": dnd.get("start_minute", 0),
                 "end_hour": dnd.get("end_hour", 8),
+                "end_minute": dnd.get("end_minute", 0),
             }
         return {}
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on DND."""
         dnd = self._device.get_dnd()
-        await self._device.set_dnd(True, dnd["start_hour"], dnd["end_hour"])
+        await self._device.set_dnd(
+            True,
+            dnd["start_hour"],
+            dnd["end_hour"],
+            dnd.get("start_minute", 0),
+            dnd.get("end_minute", 0),
+        )
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off DND."""
         dnd = self._device.get_dnd()
-        await self._device.set_dnd(False, dnd["start_hour"], dnd["end_hour"])
+        await self._device.set_dnd(
+            False,
+            dnd["start_hour"],
+            dnd["end_hour"],
+            dnd.get("start_minute", 0),
+            dnd.get("end_minute", 0),
+        )
         await self.coordinator.async_request_refresh()
 
     @callback

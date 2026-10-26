@@ -200,6 +200,8 @@ async def async_setup_entry(
                 entities.append(
                     EufyCleanStationSensor(coordinator, device, description)
                 )
+        if hasattr(device, "get_robot_room"):
+            entities.append(EufyCleanRoomSensor(coordinator, device))
 
     async_add_entities(entities)
 
@@ -300,3 +302,56 @@ class EufyCleanStationSensor(
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         self.async_write_ha_state()
+
+
+class EufyCleanRoomSensor(
+    CoordinatorEntity[EufyCleanDataUpdateCoordinator], SensorEntity
+):
+    """Room under the robot, read from the map mask at the live pose."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "robot_room"
+    _attr_name = "Room"
+    _attr_icon = "mdi:floor-plan"
+
+    def __init__(
+        self,
+        coordinator: EufyCleanDataUpdateCoordinator,
+        device: BaseDevice,
+    ) -> None:
+        """Initialize the room sensor."""
+        super().__init__(coordinator)
+        self._device = device
+        self._attr_unique_id = f"{device.device_id}_robot_room"
+        model_name = EUFY_CLEAN_DEVICES.get(device.device_model, device.device_model)
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.device_id)},
+            name=device.device_name or f"Eufy {model_name}",
+            manufacturer=MANUFACTURER,
+            model=model_name,
+            sw_version=device.device_model,
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to live pose updates, not only the 30s poll."""
+        await super().async_added_to_hass()
+        self._device.add_update_callback(self._handle_device_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Drop the live pose subscription."""
+        self._device.remove_update_callback(self._handle_device_update)
+        await super().async_will_remove_from_hass()
+
+    def _handle_device_update(self) -> None:
+        """Refresh when the MQTT stream moves the robot."""
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the room name, or None outside every room."""
+        return self._device.get_robot_room()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the room id used by clean_rooms."""
+        return {"room_id": self._device.get_robot_room_id()}

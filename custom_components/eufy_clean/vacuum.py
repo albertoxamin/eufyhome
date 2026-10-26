@@ -99,7 +99,8 @@ class EufyCleanVacuum(
     _attr_has_entity_name = True
     _attr_name = None
     _attr_supported_features = (
-        VacuumEntityFeature.FAN_SPEED
+        VacuumEntityFeature.STATE
+        | VacuumEntityFeature.FAN_SPEED
         | VacuumEntityFeature.PAUSE
         | VacuumEntityFeature.RETURN_HOME
         | VacuumEntityFeature.START
@@ -146,7 +147,28 @@ class EufyCleanVacuum(
 
     def _handle_device_update(self) -> None:
         """Refresh vacuum state when map rooms or image change."""
+        self._check_segment_changes()
         self.async_write_ha_state()
+
+    def _check_segment_changes(self) -> None:
+        """Ask the user to remap areas when the vacuum's rooms change.
+
+        No issue until the user has saved a mapping, and none while the room
+        list is still empty.
+        """
+        if not HAS_CLEAN_AREA or self.registry_entry is None:
+            return
+        if VacuumEntityFeature.CLEAN_AREA not in self.supported_features:
+            return
+        segments = self._get_segments()
+        if not segments:
+            return
+        last_seen = self.last_seen_segments
+        if last_seen is None:
+            return
+        current_ids = {segment.id for segment in segments}
+        if current_ids != {segment.id for segment in last_seen}:
+            self.async_create_segments_issue()
 
     def _get_rooms(self) -> list[dict[str, Any]]:
         """Return the latest room list from coordinator or device."""
@@ -267,4 +289,5 @@ class EufyCleanVacuum(
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
+        self._check_segment_changes()
         self.async_write_ha_state()

@@ -91,6 +91,9 @@
       },
       "dock_status": {
         "name": "Dock Status"
+      },
+      "robot_room": {
+        "name": "Room"
       }
     },
     "select": {

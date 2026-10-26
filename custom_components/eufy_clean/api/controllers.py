@@ -614,12 +614,27 @@ class BaseDevice:
         """Get Do Not Disturb status and schedule."""
         raw = self._robovac_data.get("DND", "")
         if not raw or not isinstance(raw, str):
-            return {"enabled": False, "start_hour": 22, "end_hour": 8}
+            return {
+                "enabled": False,
+                "start_hour": 22,
+                "start_minute": 0,
+                "end_hour": 8,
+                "end_minute": 0,
+            }
         return decode_dnd(raw)
 
-    async def set_dnd(self, enabled: bool, start_hour: int, end_hour: int) -> None:
+    async def set_dnd(
+        self,
+        enabled: bool,
+        start_hour: int,
+        end_hour: int,
+        start_minute: int = 0,
+        end_minute: int = 0,
+    ) -> None:
         """Set Do Not Disturb status and schedule."""
-        command = encode_dnd(enabled, start_hour, end_hour)
+        command = encode_dnd(
+            enabled, start_hour, end_hour, start_minute, end_minute
+        )
         await self.send_command({self._dps_map.get("DND", "157"): command})
 
     def get_boost_iq(self) -> bool:
@@ -920,6 +935,16 @@ class MqttDevice(BaseDevice):
     def get_robot_pixel(self) -> tuple[int, int] | None:
         """Return the last known robot pixel on the rendered map."""
         return self._map_handler.robot_pixel
+
+    def get_robot_room(self) -> str | None:
+        """Return the room name under the robot, or None when it is not in a room."""
+        found = self._map_handler.robot_room()
+        return None if found is None else found[1]
+
+    def get_robot_room_id(self) -> int | None:
+        """Return the room id under the robot, or None when it is not in a room."""
+        found = self._map_handler.robot_room()
+        return None if found is None else found[0]
 
     def get_restricted_zone_counts(self) -> dict[str, int]:
         """Return counts of virtual walls and zone polygons."""

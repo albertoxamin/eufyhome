@@ -155,13 +155,13 @@ These are on the device page. The card covers cleaning, zones, the station, and 
 
 **Selects.** Clean Type, Mop Water Level, and Clean Intensity appear on mopping models. Clean Room picks one room by name. Start the vacuum after you pick it.
 
-**Switches.** Do Not Disturb, BoostIQ, Auto Empty, and Auto Wash Mop.
+**Switches.** Do Not Disturb, BoostIQ, Auto Empty, and Auto Wash Mop. Do Not Disturb start and Do Not Disturb end set the times, including the minute.
 
 **Volume.** A number entity.
 
 **Buttons.** Locate, Wash Mop, Dry Mop, Empty Dust Bin, and Stop Station.
 
-**Sensors.** Work status, work mode, clean speed, error, station activity, dock status, and consumable usage.
+**Sensors.** Work status, work mode, clean speed, error, station activity, dock status, consumable usage, and Room. Room is the name under the robot. It stays on the last room until the next pose.
 
 ## Supported Devices
 
@@ -222,6 +222,8 @@ data:
 ```
 
 **Finding room IDs:** open the vacuum or the Map camera and read the `rooms` attribute. Each entry has an `id` and a `name`. The card uses those names, so you only need the ids for an automation.
+
+On Home Assistant 2026.3 or newer, open the vacuum entity settings and map those rooms to Home Assistant areas. `vacuum.clean_area` then cleans the areas you name. If the vacuum's room list changes after that mapping, a repair asks you to map them again.
 
 Other actions the card uses, if you want them in an automation:
 
