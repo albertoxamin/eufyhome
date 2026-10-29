@@ -229,3 +229,26 @@ remote_move:
             - left
             - right
             - brake
+
+start_clean:
+  name: Start Clean
+  description: Start a whole-home clean. 2 passes is the cross pattern from the app.
+  target:
+    entity:
+      integration: eufy_clean
+      domain: vacuum
+  fields:
+    clean_times:
+      name: Clean Times
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 2
+          mode: box
+    edge_mop:
+      name: Edge-hugging mop
+      required: false
+      selector:
+        boolean:

@@ -247,7 +247,7 @@ def main() -> None:
     )
 
     custom_raw = base64.b64decode(
-        encode_rooms_custom_command([{"id": 2, "suction": "max", "mop": "low"}], map_id=7)
+        encode_rooms_custom_command([{"id": 2, "suction": "max", "mop": "low", "times": 2}], map_id=7)
     )
     clen, cpos = decode_varint(custom_raw, 0)
     custom = map_edit_pb2.MapEditRequest()
@@ -257,6 +257,7 @@ def main() -> None:
     assert parm.id == 2
     assert parm.custom.fan.suction == 3
     assert parm.custom.mop_mode.level == 0
+    assert parm.custom.clean_times == 2
     room_raw = base64.b64decode(encode_room_clean_command([2], customize=True))
     rlen, rpos = decode_varint(room_raw, 0)
     room_req = control_pb2.ModeCtrlRequest()
@@ -267,6 +268,10 @@ def main() -> None:
     assert schedule["enabled"] is True
     assert (schedule["start_hour"], schedule["start_minute"]) == (22, 30)
     assert (schedule["end_hour"], schedule["end_minute"]) == (8, 15)
+    from eufy_clean.api.proto_utils import decode_clean_param, encode_clean_param
+
+    corner = decode_clean_param(encode_clean_param(mop_level=1, corner_clean=1))
+    assert corner["mop_level"] == 1 and corner["corner_clean"] == 1
     print("ok", live.robot_pixel, "dock", live._dock_pixel)
 
 

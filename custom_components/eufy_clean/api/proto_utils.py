@@ -471,7 +471,7 @@ def encode_rooms_custom_command(
         }.get(str(room.get("kind") or "both"), CLEAN_TYPE_SWEEP_AND_MOP)
         parm.custom.fan.suction = SUCTION_LEVELS[str(room["suction"])]
         parm.custom.mop_mode.level = MOP_LEVELS[str(room["mop"])]
-        parm.custom.clean_times = 1
+        parm.custom.clean_times = int(room.get("times") or 1)
     return encode_protobuf_message(req)
 
 
@@ -1003,9 +1003,15 @@ def decode_clean_param(base64_value: str) -> dict[str, Any] | None:
                         if fi == 1:
                             result["clean_extent"] = vi
                     elif f == 4 and wt == 2 and isinstance(v, bytes):
-                        fi, _, vi, _ = decode_protobuf_field(v, 0)
-                        if fi == 1:
-                            result["mop_level"] = vi
+                        mop_pos = 0
+                        while mop_pos < len(v):
+                            fi, _, vi, mop_pos = decode_protobuf_field(v, mop_pos)
+                            if fi is None:
+                                break
+                            if fi == 1:
+                                result["mop_level"] = vi
+                            elif fi == 2:
+                                result["corner_clean"] = vi
                     elif f == 7 and wt == 0:
                         result["clean_times"] = v
                 break
@@ -1073,6 +1079,7 @@ def encode_clean_param(
     mop_level: int | None = None,
     clean_extent: int | None = None,
     clean_times: int = 1,
+    corner_clean: int | None = None,
 ) -> str:
     """
     Encode CleanParamRequest protobuf message.
@@ -1083,7 +1090,7 @@ def encode_clean_param(
     CleanParam structure:
     - field 1: clean_type (CleanType message with field 1 = value enum)
     - field 3: clean_extent (CleanExtent message with field 1 = value enum)
-    - field 4: mop_mode (MopMode message with field 1 = level enum)
+    - field 4: mop_mode (level in field 1, corner clean in field 2)
     - field 7: clean_times (uint32)
     """
     # Build CleanParam message
@@ -1100,9 +1107,13 @@ def encode_clean_param(
         clean_extent_msg = encode_protobuf_field(1, 0, clean_extent)
         clean_param += encode_protobuf_field(3, 2, clean_extent_msg)
 
-    # Field 4: mop_mode
-    if mop_level is not None:
-        mop_mode_msg = encode_protobuf_field(1, 0, mop_level)
+    # Field 4: mop_mode. Corner clean 1 is the deep edge-hugging pass.
+    if mop_level is not None or corner_clean is not None:
+        mop_mode_msg = b""
+        if mop_level is not None:
+            mop_mode_msg += encode_protobuf_field(1, 0, mop_level)
+        if corner_clean is not None:
+            mop_mode_msg += encode_protobuf_field(2, 0, corner_clean)
         clean_param += encode_protobuf_field(4, 2, mop_mode_msg)
 
     # Field 7: clean_times

@@ -42,6 +42,7 @@ SERVICE_SET_ZONES = "set_zones"
 SERVICE_START_SCENE = "start_scene"
 SERVICE_STATION = "station"
 SERVICE_REMOTE = "remote_move"
+SERVICE_START_CLEAN = "start_clean"
 _CARD_KEY = "map_card"
 ATTR_ROOM_IDS = "room_ids"
 ATTR_CLEAN_TIMES = "clean_times"
@@ -123,9 +124,14 @@ async def async_register_map_card(hass: HomeAssistant) -> None:
                 str(frontend / "station.webp"),
                 False,
             ),
+            StaticPathConfig(
+                "/eufy_clean/icons",
+                str(frontend / "icons"),
+                False,
+            ),
         ]
     )
-    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js?v=5")
+    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js?v=7")
     hass.data.setdefault(DOMAIN, {})[_CARD_KEY] = True
 
 
@@ -272,6 +278,15 @@ async def async_register_services(hass: HomeAssistant) -> None:
         else:
             await device.station_stop()
 
+    async def handle_start_clean(call: ServiceCall) -> None:
+        """Start a whole-home clean with a pass count."""
+        devices = _devices_for_call(hass, call)
+        if devices:
+            await devices[0].start(
+                int(call.data.get(ATTR_CLEAN_TIMES, 1)),
+                call.data.get("edge_mop") if "edge_mop" in call.data else None,
+            )
+
     async def handle_remote(call: ServiceCall) -> None:
         """Drive the robot one direction, or brake."""
         devices = _devices_for_call(hass, call)
@@ -290,8 +305,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 {
                     vol.Required("entity_id"): vol.Any(str, [str]),
                     vol.Required(ATTR_ROOM_IDS): vol.Any(str, [int]),
-                    vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.All(
-                        vol.Coerce(int), vol.Range(min=1, max=3)
+                    vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.Any(
+                        vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
+                        [vol.All(vol.Coerce(int), vol.Range(min=1, max=3))],
                     ),
                     vol.Optional("suction"): [
                         vol.In(("quiet", "standard", "turbo", "max"))
@@ -422,6 +438,22 @@ async def async_register_services(hass: HomeAssistant) -> None:
                         ("forward", "back", "left", "right", "brake")
                     ),
                     vol.Optional("start", default=False): bool,
+                }
+            ),
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_START_CLEAN):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_START_CLEAN,
+            handle_start_clean,
+            schema=vol.Schema(
+                {
+                    vol.Required("entity_id"): vol.Any(str, [str]),
+                    vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.All(
+                        vol.Coerce(int), vol.Range(min=1, max=3)
+                    ),
+                    vol.Optional("edge_mop"): bool,
                 }
             ),
         )

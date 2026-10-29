@@ -35,6 +35,7 @@ from .proto_utils import (
     MOP_LEVEL_HIGH,
     MOP_LEVEL_LOW,
     MOP_LEVEL_MEDIUM,
+    decode_clean_param,
     decode_clean_speed,
     decode_cleaning_statistics,
     decode_consumables,
@@ -301,12 +302,14 @@ class BaseDevice:
         """Send command to device."""
         raise NotImplementedError
 
-    async def start(self) -> None:
-        """Start cleaning."""
+    async def start(self, clean_times: int = 1, edge_mop: bool | None = None) -> None:
+        """Start cleaning. ``clean_times`` 2 is the app's cross pass."""
         if self._novel_api:
+            if edge_mop is not None:
+                await self.set_edge_mop(edge_mop)
             # Encode control command for novel API using protobuf
             command = encode_control_command(
-                CONTROL_START_AUTO_CLEAN, {"clean_times": 1}
+                CONTROL_START_AUTO_CLEAN, {"clean_times": clean_times}
             )
             await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         else:
@@ -392,6 +395,19 @@ class BaseDevice:
         else:
             _LOGGER.error("Invalid mop level: %s", level)
 
+    async def set_edge_mop(self, enabled: bool) -> None:
+        """Set deep corner mopping. True hugs the edges on the next clean."""
+        if not self._novel_api:
+            return
+        raw = self._robovac_data.get("CLEANING_PARAMETERS", "")
+        decoded = decode_clean_param(raw) if isinstance(raw, str) else None
+        level = decoded.get("mop_level") if decoded else None
+        command = encode_clean_param(
+            mop_level=level,
+            corner_clean=1 if enabled else 0,
+        )
+        await self.send_command({self._dps_map["CLEANING_PARAMETERS"]: command})
+
     async def set_clean_extent(self, extent: str) -> None:
         """Set cleaning extent/intensity (normal, narrow/deep, quick)."""
         if not self._novel_api:
@@ -415,7 +431,7 @@ class BaseDevice:
     async def clean_rooms(
         self,
         room_ids: list[int],
-        clean_times: int = 1,
+        clean_times: int | list[int] = 1,
         suction: list[str] | None = None,
         mop: list[str] | None = None,
         kind: list[str] | None = None,
@@ -434,6 +450,12 @@ class BaseDevice:
             return
 
         customize = bool(suction and mop and len(suction) == len(mop) == len(room_ids))
+        if isinstance(clean_times, list):
+            per_room = [int(value) for value in clean_times] or [1]
+            shared = per_room[0]
+        else:
+            shared = int(clean_times)
+            per_room = []
         map_id, releases = self._floor_ids() if customize else (0, 0)
         if customize:
             rooms = [
@@ -442,12 +464,13 @@ class BaseDevice:
                     "suction": suction[index],
                     "mop": mop[index],
                     "kind": kind[index] if kind and index < len(kind) else "both",
+                    "times": per_room[index] if index < len(per_room) else shared,
                 }
                 for index, room_id in enumerate(room_ids)
             ]
             await self.send_command({"170": encode_rooms_custom_command(rooms, map_id)})
         command = encode_room_clean_command(
-            room_ids, clean_times, map_id, releases, customize
+            room_ids, shared, map_id, releases, customize
         )
         await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
         _LOGGER.info("Started cleaning rooms: %s", room_ids)

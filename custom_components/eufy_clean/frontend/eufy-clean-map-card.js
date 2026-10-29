@@ -8,7 +8,8 @@ class EufyCleanMapCard extends HTMLElement {
     this._zoneKind = "nogo";
     this._rooms = [];
     this._area = null;
-    this._areaJob = { kind: "both", suction: "standard", mop: "medium" };
+    this._areaJob = { kind: "both", suction: "standard", mop: "medium", times: 1 };
+    this._homeJob = { times: 1 };
     this._zones = { nogo: [], nomop: [] };
     this._dirty = false;
     this._selected = null;
@@ -48,10 +49,10 @@ class EufyCleanMapCard extends HTMLElement {
           background: var(--primary-color, #03a9f4); color: #fff; font-weight: 700;
           display: grid; place-items: center;
         }
-        .clean { display: flex; align-items: center; gap: 8px; padding: 10px 12px 0; }
+        .clean { display: flex; align-items: center; gap: 8px; padding: 10px 12px 0; min-width: 0; }
         .clean .label { color: var(--secondary-text-color, #6b6b6b); font-size: 13px; }
-        .modes { display: flex; gap: 2px; padding: 2px; background: var(--secondary-background-color, #f2f2f2); border-radius: 10px; flex: 1; }
-        .modes button { flex: 1; padding: 7px 0; border-radius: 8px; }
+        .modes { display: flex; gap: 2px; padding: 2px; background: var(--secondary-background-color, #f2f2f2); border-radius: 10px; flex: 1; min-width: 0; }
+        .modes button { flex: 1; min-width: 0; padding: 7px 0; border-radius: 8px; white-space: nowrap; }
         .modes button.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); font-weight: 650; }
         .station { width: 36px; height: 36px; border-radius: 10px; background: #1c1c1c; display: grid; place-items: center; }
         .station img { width: 22px; height: 22px; object-fit: contain; display: block; }
@@ -62,12 +63,21 @@ class EufyCleanMapCard extends HTMLElement {
         .panel button, .edit { background: var(--secondary-background-color, #f2f2f2); border-radius: 999px; padding: 8px 12px; }
         .edit.on, .panel button.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
         .body { padding: 10px 12px 8px; }
-        .levels { display: flex; flex-direction: column; gap: 8px; }
+        .levels { display: flex; flex-direction: column; gap: 10px; }
         .levels:empty { display: none; }
-        .level { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
-        .level b { flex: 1; min-width: 6em; align-self: center; }
-        label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--secondary-text-color, #6b6b6b); }
+        .level { display: flex; flex-direction: column; gap: 8px; }
+        .level + .level { padding-top: 8px; border-top: 1px solid var(--divider-color, #ececec); }
+        .line { display: flex; align-items: center; gap: 8px; }
+        .line b { flex: 1 1 auto; min-width: 0; }
+        .line.tail { justify-content: flex-end; }
+        label { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 11px; color: var(--secondary-text-color, #6b6b6b); white-space: nowrap; }
         select { background: var(--secondary-background-color, #f2f2f2); border-radius: 8px; padding: 6px 8px; }
+        .picks { display: flex; gap: 4px; }
+        .picks button { width: 32px; height: 32px; min-width: 32px; border-radius: 8px; background: var(--secondary-background-color, #f2f2f2); display: grid; place-items: center; overflow: hidden; }
+        .picks button.text { width: auto; min-width: 44px; padding: 0 10px; font-size: 13px; }
+        .picks img { width: 20px; height: 20px; min-width: 20px; max-width: 20px; object-fit: contain; display: block; }
+        .picks button.on { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+        .picks button.on img { filter: brightness(0) invert(1); }
         .start { width: 100%; margin-top: 10px; padding: 12px; border-radius: 12px; background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); font-weight: 700; }
         .row { width: 100%; display: flex; justify-content: space-between; padding: 12px; border-top: 1px solid var(--divider-color, #ececec); }
         .advanced { display: flex; justify-content: flex-end; padding: 4px 12px 10px; }
@@ -277,17 +287,41 @@ class EufyCleanMapCard extends HTMLElement {
     }
   }
 
-  _choice(options, value, onChange) {
-    const select = document.createElement("select");
-    for (const [key, label] of options) {
-      const item = document.createElement("option");
-      item.value = key;
-      item.textContent = label;
-      item.selected = key === value;
-      select.append(item);
+  _picks(options, value, onChange) {
+    const wrap = document.createElement("div");
+    wrap.className = "picks";
+    for (const [key, file, label] of options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.title = label;
+      button.setAttribute("aria-label", label);
+      button.className = key === value ? "on" : "";
+      if (file) {
+        const img = document.createElement("img");
+        img.src = "/eufy_clean/icons/" + file;
+        img.alt = "";
+        button.append(img);
+      } else {
+        button.textContent = label;
+        button.classList.add("text");
+      }
+      button.addEventListener("click", () => {
+        onChange(key);
+        wrap.querySelectorAll("button").forEach((item) => {
+          item.classList.toggle("on", item === button);
+        });
+      });
+      wrap.append(button);
     }
-    select.addEventListener("change", () => onChange(select.value));
-    return select;
+    return wrap;
+  }
+
+  _toggle(on, onChange) {
+    return this._picks(
+      [["0", "", "Off"], ["1", "", "On"]],
+      on ? "1" : "0",
+      (value) => onChange(value === "1")
+    );
   }
 
   _labeled(title, control) {
@@ -298,46 +332,85 @@ class EufyCleanMapCard extends HTMLElement {
 
   _drawLevels() {
     this._levels.replaceChildren();
-    const jobs = this._mode === "rooms"
-      ? this._rooms
-      : this._mode === "area" && this._area
-        ? [this._areaJob]
-        : [];
+    const jobs = this._mode === "home"
+      ? [this._homeJob]
+      : this._mode === "rooms"
+        ? this._rooms
+        : this._mode === "area" && this._area
+          ? [this._areaJob]
+          : [];
+    const times = (job) => this._labeled("Passes", this._picks(
+      [["1", "times1.webp", "1 pass"], ["2", "times2.webp", "2 passes"]],
+      String(job.times || 1),
+      (value) => { job.times = Number(value); }
+    ));
     jobs.forEach((job, index) => {
-      if (!job.kind) {
+      if (!job.kind && this._mode !== "home") {
         job.kind = "both";
+      }
+      if (!job.times) {
+        job.times = 1;
       }
       const row = document.createElement("div");
       row.className = "level";
       const name = document.createElement("b");
       name.textContent = this._mode === "rooms"
         ? (index + 1) + " " + (job.name || "Room " + job.id)
-        : "Area";
-      row.append(
-        name,
-        this._labeled("Clean", this._choice(
-          [["vacuum", "Vacuum"], ["mop", "Mop"], ["both", "Both"]],
+        : this._mode === "area"
+          ? "Area"
+          : "Home";
+      const head = document.createElement("div");
+      head.className = "line";
+      head.append(name, times(job));
+      if (this._mode !== "home") {
+        head.append(this._labeled("Clean", this._picks(
+          [
+            ["vacuum", "vacuum.webp", "Vacuum"],
+            ["mop", "mop.webp", "Mop"],
+            ["both", "both.webp", "Vacuum and mop"],
+          ],
           job.kind,
           (value) => {
             job.kind = value;
             this._levelKey = "";
             this._drawLevels();
           }
-        ))
-      );
-      if (job.kind !== "mop") {
-        row.append(this._labeled("Suction", this._choice(
-          [["quiet", "Quiet"], ["standard", "Standard"], ["turbo", "Turbo"], ["max", "Max"]],
+        )));
+      }
+      if (this._mode === "home") {
+        head.append(this._labeled("Edge", this._toggle(
+          !!job.edge,
+          (on) => { job.edge = on; }
+        )));
+      }
+      row.append(head);
+      const tail = document.createElement("div");
+      tail.className = "line tail";
+      if (this._mode !== "home" && job.kind !== "mop") {
+        tail.append(this._labeled("Suction", this._picks(
+          [
+            ["quiet", "suction-quiet.webp", "Quiet"],
+            ["standard", "suction-standard.webp", "Standard"],
+            ["turbo", "suction-turbo.webp", "Turbo"],
+            ["max", "suction-max.webp", "Max"],
+          ],
           job.suction || "standard",
           (value) => { job.suction = value; }
         )));
       }
-      if (job.kind !== "vacuum") {
-        row.append(this._labeled("Mop", this._choice(
-          [["low", "Low"], ["medium", "Medium"], ["high", "High"]],
+      if (this._mode !== "home" && job.kind !== "vacuum") {
+        tail.append(this._labeled("Mop", this._picks(
+          [
+            ["low", "mop-low.webp", "Low"],
+            ["medium", "mop-medium.webp", "Medium"],
+            ["high", "mop-high.webp", "High"],
+          ],
           job.mop || "medium",
           (value) => { job.mop = value; }
         )));
+      }
+      if (tail.childElementCount) {
+        row.append(tail);
       }
       this._levels.append(row);
     });
@@ -426,6 +499,7 @@ class EufyCleanMapCard extends HTMLElement {
         kind: "both",
         suction: "standard",
         mop: "medium",
+        times: 1,
       });
     }
     this._levelKey = "";
@@ -491,6 +565,7 @@ class EufyCleanMapCard extends HTMLElement {
         suction: this._rooms.map((room) => room.suction || "standard"),
         mop: this._rooms.map((room) => room.mop || "medium"),
         kind: this._rooms.map((room) => room.kind || "both"),
+        clean_times: this._rooms.map((room) => Number(room.times || 1)),
       });
       this._message("Rooms started");
       return;
@@ -506,11 +581,16 @@ class EufyCleanMapCard extends HTMLElement {
         suction: this._areaJob.suction,
         mop: this._areaJob.mop,
         kind: this._areaJob.kind,
+        clean_times: Number(this._areaJob.times || 1),
       });
       this._message("Area started");
       return;
     }
-    await this._hass.callService("vacuum", "start", { entity_id: this._config.vacuum });
+    await this._hass.callService("eufy_clean", "start_clean", {
+      entity_id: this._config.vacuum,
+      clean_times: Number(this._homeJob.times || 1),
+      edge_mop: !!this._homeJob.edge,
+    });
     this._message("Whole home started");
   }
 

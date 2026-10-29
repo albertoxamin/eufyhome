@@ -135,10 +135,10 @@ vacuum: vacuum.omni
 **Clean.** The row next to the map chooses what Start does.
 
 1. Home starts a full-home clean.
-2. Rooms: tap rooms in the order you want them cleaned. A number badge shows that order. Tap a room again to drop it. Each selected room can be Vacuum, Mop, or Both, with its own suction and mop level.
-3. Area: drag a rectangle on the map. That rectangle can be Vacuum, Mop, or Both.
+2. Rooms: tap rooms in the order you want them cleaned. A number badge shows that order. Tap a room again to drop it. Each selected room can be Vacuum, Mop, or Vacuum and mop, with its own suction, mop level, and 1 or 2 passes. 2 passes is the cross pattern from the app.
+3. Area: drag a rectangle on the map. That rectangle can be Vacuum, Mop, or Vacuum and mop, also with 1 or 2 passes.
 
-Vacuum hides the mop level. Mop hides suction. Both shows both.
+Vacuum hides the mop level. Mop hides suction. Vacuum and mop shows both. Home has the same pass control, plus an edge-hugging mop toggle.
 
 **Station.** The black square on the right opens Wash mop, Dry mop, Empty dust, and Stop.
 
