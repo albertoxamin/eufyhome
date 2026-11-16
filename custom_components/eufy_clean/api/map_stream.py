@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -1468,14 +1468,19 @@ def try_extract_map_description(hex_data: str) -> tuple[int, str] | None:
     return None
 
 
+def _sign_magnitude(raw: int) -> int:
+    magnitude = raw & 0x7FFF
+    return -magnitude if raw & 0x8000 else magnitude
+
+
 def _decode_path_xy(xy: int) -> tuple[int, int]:
-    x = xy & 0xFFFF
-    y = (xy >> 16) & 0xFFFF
-    if x >= 0x8000:
-        x -= 0x10000
-    if y >= 0x8000:
-        y -= 0x10000
-    return x, y
+    """Return (x_cm, y_cm) from a PathPoint xy.
+
+    The robot packs x and y as big-endian 16-bit sign-magnitude values, so the
+    little-endian bytes of xy are x_hi, x_lo, y_hi, y_lo.
+    """
+    x_hi, x_lo, y_hi, y_lo = (xy & 0xFFFFFFFF).to_bytes(4, "little")
+    return _sign_magnitude(x_hi << 8 | x_lo), _sign_magnitude(y_hi << 8 | y_lo)
 
 
 def _exact_path_point(value: bytes) -> tuple[int, int] | None:
@@ -1528,33 +1533,25 @@ def _append_path_point(
     points.append((x, y, break_before, travel))
 
 
-def _collect_path_points(data: bytes, out: list[_PathPoint]) -> None:
-    from .proto_utils import decode_protobuf_field
+def try_extract_path_points(hex_data: str) -> list[_PathPoint] | None:
+    """Decode a biz/ path frame of length-prefixed PathPoint records.
 
+    Returns [(x_cm, y_cm, break_before, travel), ...], or None when any record
+    is not a PathPoint.
+    """
+    try:
+        data = bytes.fromhex(hex_data)
+    except ValueError:
+        return None
+    points: list[_PathPoint] = []
     pos = 0
     while pos < len(data):
-        start = pos
-        field_num, wire_type, value, pos = decode_protobuf_field(data, pos)
-        if field_num is None or pos <= start:
-            break
-        if wire_type != 2 or not isinstance(value, bytes) or len(value) < 2:
-            continue
-        exact = _exact_path_point(value)
-        if exact is not None:
-            _append_path_point(out, exact[0], exact[1])
-            continue
-        if len(value) >= 4:
-            _collect_path_points(value, out)
-
-
-def try_extract_path_points(hex_data: str) -> list[_PathPoint] | None:
-    """Decode a biz/ path frame. Returns [(x_cm, y_cm, break_before, travel), ...]."""
-    points: list[_PathPoint] = []
-    for proto_bytes in _hex_proto_candidates(hex_data):
-        exact = _exact_path_point(proto_bytes)
-        if exact is not None:
-            _append_path_point(points, exact[0], exact[1])
-        _collect_path_points(proto_bytes, points)
+        length, start = decode_varint(data, pos)
+        pos = start + length
+        exact = _exact_path_point(data[start:pos]) if pos <= len(data) else None
+        if exact is None:
+            return None
+        _append_path_point(points, exact[0], exact[1])
     return points or None
 
 
@@ -1605,8 +1602,20 @@ def try_extract_metadata_channels(hex_data: str) -> dict[str, int] | None:
     return None
 
 
-def parse_biz_protocol41(payload: bytes) -> tuple[int, str] | None:
-    """Parse a biz/ MQTT message. Returns (channel_id, hex_data) or None."""
+class BizFrame(NamedTuple):
+    """One biz/ stream message.
+
+    ``offset`` is the byte position of this chunk in the channel stream, or
+    None when the robot does not send one.
+    """
+
+    channel_id: int
+    hex_data: str
+    offset: int | None
+
+
+def parse_biz_protocol41(payload: bytes) -> BizFrame | None:
+    """Parse a biz/ MQTT message, or None when it has no channel or data."""
     try:
         msg = json.loads(payload)
         payload_data = msg.get("payload", {})
@@ -1620,7 +1629,10 @@ def parse_biz_protocol41(payload: bytes) -> tuple[int, str] | None:
         if channel_id is None or not hex_data:
             _LOGGER.debug("biz/ missing channel_id or data — keys: %s", list(data.keys()))
             return None
-        return channel_id, hex_data
+        offset = data.get("offset")
+        return BizFrame(
+            channel_id, hex_data, int(offset) if offset is not None else None
+        )
     except Exception as exc:
         _LOGGER.debug("biz/ JSON parse failed: %s — first 200: %s", exc, payload[:200])
         return None
@@ -1691,6 +1703,7 @@ class MapStreamHandler:
         self._max_px = defaults["max_px"]
         self._style = defaults["style"]
         self._path_channel_id: int | None = None
+        self._robot_streams_path = False
         self._dynamic_channel_id: int | None = None
         self._pending_room_names: dict[int, str] = {}
         self._pending_room_outline: tuple[bytes, int, int, int, int] | None = None
@@ -1698,7 +1711,13 @@ class MapStreamHandler:
         self._last_pose_render = 0.0
 
     def clear_trail_on_new_session(self) -> None:
-        """Clear live trail when a new cleaning session starts."""
+        """Clear live trail when a new cleaning session starts.
+
+        Does nothing once the robot streams its path, because a path chunk at
+        offset 0 marks the new clean.
+        """
+        if self._robot_streams_path:
+            return
         self._robot_trail.clear()
         self._cleaning_path.clear()
         self._robot_pixel = None
@@ -1771,6 +1790,13 @@ class MapStreamHandler:
             return False
         self._render()
         return True
+
+    def _ingest_path_chunk(self, path_pts: list[_PathPoint], offset: int) -> bool:
+        self._robot_streams_path = True
+        if offset == 0:
+            self._cleaning_path.clear()
+            self._robot_trail.clear()
+        return self._ingest_path_points(path_pts)
 
     def _frame_matches_channel(self, channel_id: int, known_id: int | None) -> bool:
         return known_id is None or channel_id == known_id
@@ -1880,7 +1906,10 @@ class MapStreamHandler:
         if result is None:
             return False
 
-        channel_id, hex_data = result
+        channel_id, hex_data, offset = result
+
+        if offset is not None and (path_pts := try_extract_path_points(hex_data)):
+            return self._ingest_path_chunk(path_pts, offset)
 
         desc = try_extract_map_description(hex_data)
         if desc is not None:

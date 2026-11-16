@@ -325,8 +325,8 @@ async def main() -> None:
         if msg.topic == topic_biz:
             biz_count += 1
             parsed = parse_biz_protocol41(msg.payload)
-            if parsed is not None and len(parsed[1]) < 800:
-                channel_id, hex_data = parsed
+            if parsed is not None and len(parsed.hex_data) < 800:
+                hex_data = parsed.hex_data
                 channels = try_extract_metadata_channels(hex_data)
                 if channels:
                     print(f"    channels {channels}")
