@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from custom_components.eufy_clean.api.map_stream import (
     MapStreamHandler,
     try_extract_path_points,
@@ -15,6 +17,35 @@ PATH_CHANNEL = 11
 POSE_CHANNEL = 7
 PATH_FRAMES = ["08088089804410E00E", "0908808980C40110E00E"]
 POSE_FRAMES = ["0A0A0808A2031023188E04", "0A0A0808FC02102918E504"]
+C10_PATH_RECORDS = [
+    "0608800910F00E",
+    "08088091805C10E00E",
+    "0908809380D40110E00E",
+    "090880A580B40210E00E",
+    "090880A780840310E00E",
+    "0908809580AC0310E00E",
+    "0908808880B40310E00E",
+    "090880A880AC0310E00E",
+    "090880C680AC0310E00E",
+    "090880E6809C0310E00E",
+    "0908808481A40310E00E",
+    "0908808681CC0210E00E",
+]
+C10_PATH_POINTS = [
+    (-4, 0, True, False),
+    (-8, -11, False, False),
+    (-9, -26, False, False),
+    (-18, -38, False, False),
+    (-19, -48, False, False),
+    (-10, -53, False, False),
+    (4, -54, False, False),
+    (20, -53, False, False),
+    (35, -53, False, False),
+    (51, -51, False, False),
+    (66, -52, False, False),
+    (67, -41, False, False),
+]
+PATH_CHUNK = "".join(C10_PATH_RECORDS)
 
 
 def _lz4_literals(raw: bytes) -> bytes:
@@ -53,10 +84,18 @@ def _map_frame() -> str:
     return _frame(message)
 
 
-def _biz(channel: int, hex_data: str) -> bytes:
+def _biz(channel: int, hex_data: str, **stream_fields: int) -> bytes:
     return json.dumps(
-        {"payload": {"data": {"channel_id": channel, "data": hex_data}}}
+        {
+            "payload": {
+                "data": {"channel_id": channel, "data": hex_data, **stream_fields}
+            }
+        }
     ).encode()
+
+
+def _chunk(channel: int, offset: int, hex_data: str) -> bytes:
+    return _biz(channel, hex_data, offset=offset, len=len(hex_data) // 2)
 
 
 def _metadata_frame() -> str:
@@ -67,9 +106,29 @@ def _metadata_frame() -> str:
     return _frame(message)
 
 
+@pytest.mark.parametrize("index", [0, 1, 10])
+def test_path_point_is_big_endian_sign_magnitude_centimetres(index):
+    record = C10_PATH_RECORDS[index]
+
+    assert try_extract_path_points(record) == [C10_PATH_POINTS[index]]
+
+
+def test_frame_of_many_path_records_yields_every_point_in_order():
+    assert try_extract_path_points(PATH_CHUNK) == C10_PATH_POINTS
+
+
+def test_path_chunk_at_offset_zero_starts_a_new_path():
+    handler = MapStreamHandler()
+    handler.handle_biz_payload(_biz(MAP_CHANNEL, _map_frame()))
+    handler.handle_biz_payload(_chunk(PATH_CHANNEL, 0, PATH_CHUNK))
+
+    handler.handle_biz_payload(_chunk(PATH_CHANNEL, 0, C10_PATH_RECORDS[0]))
+
+    assert handler._cleaning_path == C10_PATH_POINTS[:1]
+
+
 def test_map_frame_is_decoded_when_path_parser_also_matches_it():
     frame = _map_frame()
-    assert try_extract_path_points(frame)
     handler = MapStreamHandler()
 
     handler.handle_biz_payload(_biz(MAP_CHANNEL, frame))
