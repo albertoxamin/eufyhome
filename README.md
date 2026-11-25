@@ -299,6 +299,27 @@ ruff check custom_components scripts --fix
 ruff format custom_components scripts
 ```
 
+### Tests
+
+There are two suites in `tests/`:
+
+- Plain unit tests (map rendering, protocol encoding) run without Home
+  Assistant, on any Python 3.10+:
+  ```bash
+  pip install pytest protobuf pillow aiohttp
+  pytest tests/ -q
+  ```
+- HA harness tests (`test_ha_init.py`: config entry setup, unload, retry)
+  run against a real Home Assistant 2026.11, which needs Python 3.14.2+:
+  ```bash
+  ./scripts/setup_test_env.sh   # needs uv; creates .venv and installs the harness
+  .venv/bin/python -m pytest tests/ -q
+  ```
+
+GitHub Actions runs the full suite (plus `ruff check` / `ruff format`
+on `tests/`) on every push and pull request — see
+`.github/workflows/test.yml`.
+
 ## Credits
 
 This integration is based on the work of:

@@ -51,7 +51,7 @@ ATTR_SQUARE_Y = "y"
 ATTR_SQUARE_SIZE = "size"
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Set up Eufy Clean from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     async_register_map_preview(hass)
@@ -76,8 +76,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register services
     await async_register_services(hass)
-
-    return True
 
 
 def _devices_for_call(hass: HomeAssistant, call: ServiceCall) -> list[Any]:
@@ -493,15 +491,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        coordinator: EufyCleanDataUpdateCoordinator = hass.data[DOMAIN].pop(
-            entry.entry_id
-        )
-        await coordinator.async_shutdown()
-
-    return unload_ok
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
+    coordinator: EufyCleanDataUpdateCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
+    await coordinator.async_shutdown()
 
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
