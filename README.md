@@ -136,7 +136,7 @@ vacuum: vacuum.omni
 
 1. Home starts a full-home clean.
 2. Rooms: tap rooms in the order you want them cleaned. A number badge shows that order. Tap a room again to drop it. Each selected room can be Vacuum, Mop, or Vacuum and mop, with its own suction, mop level, and 1 or 2 passes. 2 passes is the cross pattern from the app.
-3. Area: drag a rectangle on the map. That rectangle can be Vacuum, Mop, or Vacuum and mop, also with 1 or 2 passes.
+3. Area: drag a rectangle on the map. Drag again to add another area — each one gets a × in its top-right corner to remove it. All the areas share one Vacuum / Mop / Vacuum and mop setting, with 1 or 2 passes, and Start cleans them in one job.
 
 Vacuum hides the mop level. Mop hides suction. Vacuum and mop shows both. Home has the same pass control, plus an edge-hugging mop toggle.
 
@@ -227,7 +227,7 @@ On Home Assistant 2026.3 or newer, open the vacuum entity settings and map those
 
 Other actions the card uses, if you want them in an automation:
 
-- `eufy_clean.clean_area` cleans a rectangle. `x1`, `y1`, `x2`, and `y2` are fractions of the picture, from 0 to 1. Optional `kind` is `vacuum`, `mop`, or `both`.
+- `eufy_clean.clean_area` cleans a rectangle. `x1`, `y1`, `x2`, and `y2` are fractions of the picture, from 0 to 1. Optional `kind` is `vacuum`, `mop`, or `both`. Pass `areas` instead — a list of `[x1, y1, x2, y2]` rectangles — to clean several areas in one job.
 - `eufy_clean.clean_square` cleans a square. `x` and `y` are the centre in centimetres. `size` is the side, from 50 to 2000.
 - `eufy_clean.set_zones` replaces no-go and no-mop rectangles. Virtual walls stay.
 - `eufy_clean.start_scene` starts a scenario by `scene_id`.

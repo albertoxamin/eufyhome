@@ -154,8 +154,9 @@
     },
     "clean_area": {
       "name": "Clean Area",
-      "description": "Clean a rectangle on the map picture.",
+      "description": "Clean one or more rectangles on the map picture.",
       "fields": {
+        "areas": {"name": "Areas", "description": "Rectangles as [x1, y1, x2, y2] picture fractions. Use instead of a single x1, y1, x2, y2 rectangle."},
         "x1": {"name": "X1", "description": "First corner, horizontal fraction."},
         "y1": {"name": "Y1", "description": "First corner, vertical fraction."},
         "x2": {"name": "X2", "description": "Opposite corner, horizontal fraction."},

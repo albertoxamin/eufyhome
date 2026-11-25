@@ -7,7 +7,7 @@ class EufyCleanMapCard extends HTMLElement {
     this._mode = "home";
     this._zoneKind = "nogo";
     this._rooms = [];
-    this._area = null;
+    this._areas = [];
     this._areaJob = { kind: "both", suction: "standard", mop: "medium", times: 1 };
     this._homeJob = { times: 1 };
     this._zones = { nogo: [], nomop: [] };
@@ -48,6 +48,14 @@ class EufyCleanMapCard extends HTMLElement {
           width: 26px; height: 26px; border-radius: 50%;
           background: var(--primary-color, #03a9f4); color: #fff; font-weight: 700;
           display: grid; place-items: center;
+        }
+        .area-xs { position: absolute; inset: 0; pointer-events: none; }
+        .area-x {
+          position: absolute; transform: translate(50%, -50%);
+          width: 22px; height: 22px; border-radius: 50%;
+          background: #fff; color: #111; font-size: 15px; font-weight: 700; line-height: 1;
+          display: grid; place-items: center; pointer-events: auto; cursor: pointer;
+          border: 1px solid rgba(0, 0, 0, 0.25); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
         }
         .clean { display: flex; align-items: center; gap: 8px; padding: 10px 12px 0; min-width: 0; }
         .clean .label { color: var(--secondary-text-color, #6b6b6b); font-size: 13px; }
@@ -93,6 +101,7 @@ class EufyCleanMapCard extends HTMLElement {
         <img class="mapshot" alt="Map">
         <svg viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg>
         <div class="badges"></div>
+        <div class="area-xs"></div>
       </div>
       <div class="clean">
         <span class="label">Clean</span>
@@ -121,6 +130,7 @@ class EufyCleanMapCard extends HTMLElement {
     this._img = root.querySelector(".mapshot");
     this._svg = root.querySelector("svg");
     this._badges = root.querySelector(".badges");
+    this._areaXs = root.querySelector(".area-xs");
     this._modes = root.querySelector(".modes");
     this._station = root.querySelector(".station");
     this._stationPanel = root.querySelector("#station-panel");
@@ -245,11 +255,11 @@ class EufyCleanMapCard extends HTMLElement {
     this._zoneTools.querySelectorAll("[data-zone]").forEach((button) => {
       button.className = button.dataset.zone === this._zoneKind ? "on" : "";
     });
-    const needsArea = this._mode === "area" && !this._area;
+    const needsArea = this._mode === "area" && this._areas.length === 0;
     const needsRooms = this._mode === "rooms" && this._rooms.length === 0;
     this._start.disabled = needsArea || needsRooms;
     this._start.textContent = "Start";
-    const levelKey = this._mode + ":" + this._rooms.map((room) => room.id).join(",") + ":" + (this._area ? "1" : "0");
+    const levelKey = this._mode + ":" + this._rooms.map((room) => room.id).join(",") + ":" + this._areas.length;
     if (levelKey !== this._levelKey) {
       this._levelKey = levelKey;
       this._drawLevels();
@@ -336,7 +346,7 @@ class EufyCleanMapCard extends HTMLElement {
       ? [this._homeJob]
       : this._mode === "rooms"
         ? this._rooms
-        : this._mode === "area" && this._area
+        : this._mode === "area" && this._areas.length
           ? [this._areaJob]
           : [];
     const times = (job) => this._labeled("Passes", this._picks(
@@ -357,7 +367,7 @@ class EufyCleanMapCard extends HTMLElement {
       name.textContent = this._mode === "rooms"
         ? (index + 1) + " " + (job.name || "Room " + job.id)
         : this._mode === "area"
-          ? "Area"
+          ? this._areas.length > 1 ? "Areas (" + this._areas.length + ")" : "Area"
           : "Home";
       const head = document.createElement("div");
       head.className = "line";
@@ -456,9 +466,9 @@ class EufyCleanMapCard extends HTMLElement {
       this._selected = { kind: this._zoneKind, i: this._zones[this._zoneKind].length - 1 };
       this._message("Drawn. Save to send it.");
     } else if (this._mode === "area") {
-      this._area = [start[0], start[1], end[0], end[1]];
+      this._areas.push([start[0], start[1], end[0], end[1]]);
       this._levelKey = "";
-      this._message("Area ready");
+      this._message(this._areas.length > 1 ? this._areas.length + " areas ready — draw another or Start" : "Area ready — draw another to add one");
     }
     this._paint();
   }
@@ -570,20 +580,21 @@ class EufyCleanMapCard extends HTMLElement {
       this._message("Rooms started");
       return;
     }
-    if (this._mode === "area" && this._area) {
-      const [x1, y1, x2, y2] = this._area;
+    if (this._mode === "area" && this._areas.length) {
       await this._hass.callService("eufy_clean", "clean_area", {
         entity_id: this._config.vacuum,
-        x1: Math.min(x1, x2),
-        y1: Math.min(y1, y2),
-        x2: Math.max(x1, x2),
-        y2: Math.max(y1, y2),
+        areas: this._areas.map(([x1, y1, x2, y2]) => [
+          Math.min(x1, x2),
+          Math.min(y1, y2),
+          Math.max(x1, x2),
+          Math.max(y1, y2),
+        ]),
         suction: this._areaJob.suction,
         mop: this._areaJob.mop,
         kind: this._areaJob.kind,
         clean_times: Number(this._areaJob.times || 1),
       });
-      this._message("Area started");
+      this._message(this._areas.length > 1 ? this._areas.length + " areas started" : "Area started");
       return;
     }
     await this._hass.callService("eufy_clean", "start_clean", {
@@ -615,15 +626,50 @@ class EufyCleanMapCard extends HTMLElement {
         add(rect, "#ffa500", on);
       });
     }
-    if (this._mode === "area" && this._area) {
-      add(this._area, "#03a9f4", true);
+    if (this._mode === "area") {
+      this._areas.forEach((rect) => add(rect, "#03a9f4", true));
     }
     if (this._drag && (this._editingZones || this._mode === "area")) {
       const color = this._editingZones ? (this._zoneKind === "nomop" ? "#ffa500" : "#dc3232") : "#03a9f4";
       add([this._drag.start[0], this._drag.start[1], this._drag.current[0], this._drag.current[1]], color, false);
     }
     this._svg.innerHTML = parts.join("");
+    this._drawAreaXs();
     this._drawRoomBadges();
+  }
+
+  _drawAreaXs() {
+    if (this._mode !== "area" || !this._areaXs) {
+      if (this._areaXs) {
+        this._areaXs.replaceChildren();
+      }
+      return;
+    }
+    this._areaXs.replaceChildren(
+      ...this._areas.map((rect, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "area-x";
+        button.textContent = "×";
+        button.title = "Remove area " + (index + 1);
+        button.setAttribute("aria-label", "Remove area " + (index + 1));
+        button.style.left = Math.max(rect[0], rect[2]) * 100 + "%";
+        button.style.top = Math.min(rect[1], rect[3]) * 100 + "%";
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          this._removeArea(index);
+        });
+        button.addEventListener("pointerdown", (event) => event.stopPropagation());
+        return button;
+      })
+    );
+  }
+
+  _removeArea(index) {
+    this._areas.splice(index, 1);
+    this._levelKey = "";
+    this._message(this._areas.length ? this._areas.length + " area" + (this._areas.length > 1 ? "s" : "") + " left" : "Area removed");
+    this._paint();
   }
 
   _drawRoomBadges() {

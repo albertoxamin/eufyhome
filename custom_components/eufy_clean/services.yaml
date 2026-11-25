@@ -105,15 +105,20 @@ map_point:
 
 clean_area:
   name: Clean Area
-  description: Clean a rectangle drawn on the map picture. Corners are fractions from 0 to 1.
+  description: Clean one or more rectangles drawn on the map picture. Give a single rectangle (x1, y1, x2, y2) or a list of them in areas; corners are fractions from 0 to 1.
   target:
     entity:
       integration: eufy_clean
       domain: vacuum
   fields:
+    areas:
+      name: Areas
+      required: false
+      selector:
+        object:
     x1:
       name: X1
-      required: true
+      required: false
       selector:
         number:
           min: 0
@@ -122,7 +127,7 @@ clean_area:
           mode: box
     y1:
       name: Y1
-      required: true
+      required: false
       selector:
         number:
           min: 0
@@ -131,7 +136,7 @@ clean_area:
           mode: box
     x2:
       name: X2
-      required: true
+      required: false
       selector:
         number:
           min: 0
@@ -140,7 +145,7 @@ clean_area:
           mode: box
     y2:
       name: Y2
-      required: true
+      required: false
       selector:
         number:
           min: 0

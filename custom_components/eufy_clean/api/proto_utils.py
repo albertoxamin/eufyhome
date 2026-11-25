@@ -545,6 +545,39 @@ def _fill_quad(quad: Any, corners: list[tuple[int, int]]) -> None:
         point.y = int(py)
 
 
+def encode_zones_clean_command(
+    quads: list[list[tuple[int, int]]],
+    clean_times: int | list[int] = 1,
+    map_id: int = 0,
+    releases: int = 0,
+) -> str:
+    """Encode ModeCtrlRequest START_SELECT_ZONES_CLEAN for several quadrangles.
+
+    ``quads`` is one list of corners per zone; the proto's ``zones`` field
+    is repeated, so one command cleans them all in a single job.
+    ``clean_times`` is one pass count for every zone, or one per zone.
+    Corners are centimetres, p0..p3. map_id and releases come from the
+    current floor; 0 leaves the proto default.
+    """
+    from ..proto.cloud import control_pb2
+
+    if isinstance(clean_times, list):
+        times = [int(value) for value in clean_times] or [1]
+    else:
+        times = [int(clean_times)]
+    req = control_pb2.ModeCtrlRequest()
+    req.method = CONTROL_START_SELECT_ZONES_CLEAN
+    for index, corners in enumerate(quads):
+        zone = req.select_zones_clean.zones.add()
+        _fill_quad(zone.quadrangle, corners)
+        zone.clean_times = times[index] if index < len(times) else times[-1]
+    if map_id:
+        req.select_zones_clean.map_id = int(map_id)
+    if releases:
+        req.select_zones_clean.releases = int(releases)
+    return encode_protobuf_message(req)
+
+
 def encode_zone_clean_command(
     corners: list[tuple[int, int]],
     clean_times: int = 1,
@@ -556,18 +589,7 @@ def encode_zone_clean_command(
     Corners are centimetres, p0..p3. map_id and releases come from the
     current floor; 0 leaves the proto default.
     """
-    from ..proto.cloud import control_pb2
-
-    req = control_pb2.ModeCtrlRequest()
-    req.method = CONTROL_START_SELECT_ZONES_CLEAN
-    zone = req.select_zones_clean.zones.add()
-    _fill_quad(zone.quadrangle, corners)
-    zone.clean_times = clean_times
-    if map_id:
-        req.select_zones_clean.map_id = int(map_id)
-    if releases:
-        req.select_zones_clean.releases = int(releases)
-    return encode_protobuf_message(req)
+    return encode_zones_clean_command([corners], clean_times, map_id, releases)
 
 
 def encode_square_clean_command(

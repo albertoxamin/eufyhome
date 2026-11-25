@@ -131,7 +131,7 @@ async def async_register_map_card(hass: HomeAssistant) -> None:
             ),
         ]
     )
-    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js?v=7")
+    add_extra_js_url(hass, "/eufy_clean/eufy-clean-map-card.js?v=8")
     hass.data.setdefault(DOMAIN, {})[_CARD_KEY] = True
 
 
@@ -231,19 +231,51 @@ async def async_register_services(hass: HomeAssistant) -> None:
         return devices[0].map_point(float(call.data["x"]), float(call.data["y"]))
 
     async def handle_clean_area(call: ServiceCall) -> None:
-        """Clean the rectangle drawn on the picture."""
+        """Clean the rectangle(s) drawn on the picture.
+
+        Either one rectangle (``x1``/``y1``/``x2``/``y2``) or a list of
+        them (``areas``). Each entry is [x1, y1, x2, y2] as picture
+        fractions, or a dict with those keys.
+        """
         devices = _devices_for_call(hass, call)
         if not devices:
             return
+        areas = []
+        for rect in call.data.get("areas") or []:
+            if isinstance(rect, dict):
+                areas.append(
+                    (
+                        float(rect["x1"]),
+                        float(rect["y1"]),
+                        float(rect["x2"]),
+                        float(rect["y2"]),
+                    )
+                )
+            else:
+                areas.append(tuple(float(value) for value in rect))
+        if not areas:
+            if "x1" not in call.data:
+                _LOGGER.error("clean_area needs a rectangle or areas")
+                return
+            areas = [
+                (
+                    float(call.data["x1"]),
+                    float(call.data["y1"]),
+                    float(call.data["x2"]),
+                    float(call.data["y2"]),
+                )
+            ]
+        x1, y1, x2, y2 = areas[0]
         await devices[0].clean_area(
-            float(call.data["x1"]),
-            float(call.data["y1"]),
-            float(call.data["x2"]),
-            float(call.data["y2"]),
+            x1,
+            y1,
+            x2,
+            y2,
             call.data.get(ATTR_CLEAN_TIMES, 1),
             call.data.get("suction"),
             call.data.get("mop"),
             call.data.get("kind"),
+            areas=areas,
         )
 
     async def handle_set_zones(call: ServiceCall) -> None:
@@ -370,12 +402,14 @@ async def async_register_services(hass: HomeAssistant) -> None:
             schema=vol.Schema(
                 {
                     vol.Required("entity_id"): vol.Any(str, [str]),
-                    vol.Required("x1"): _unit,
-                    vol.Required("y1"): _unit,
-                    vol.Required("x2"): _unit,
-                    vol.Required("y2"): _unit,
-                    vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.All(
-                        vol.Coerce(int), vol.Range(min=1, max=3)
+                    vol.Optional("x1"): _unit,
+                    vol.Optional("y1"): _unit,
+                    vol.Optional("x2"): _unit,
+                    vol.Optional("y2"): _unit,
+                    vol.Optional("areas"): vol.All([_rect], vol.Length(min=1)),
+                    vol.Optional(ATTR_CLEAN_TIMES, default=1): vol.Any(
+                        vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
+                        [vol.All(vol.Coerce(int), vol.Range(min=1, max=3))],
                     ),
                     vol.Optional("suction"): vol.In(
                         ("quiet", "standard", "turbo", "max")

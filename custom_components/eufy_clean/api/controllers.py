@@ -53,7 +53,7 @@ from .proto_utils import (
     encode_rooms_custom_command,
     encode_scene_clean_command,
     encode_square_clean_command,
-    encode_zone_clean_command,
+    encode_zones_clean_command,
     encode_station_auto_cfg,
     encode_station_manual_cmd,
     is_base64_encoded,
@@ -525,23 +525,41 @@ class BaseDevice:
         y1: float,
         x2: float,
         y2: float,
-        clean_times: int = 1,
+        clean_times: int | list[int] = 1,
         suction: str | None = None,
         mop: str | None = None,
         kind: str | None = None,
+        areas: list[tuple[float, float, float, float]] | None = None,
     ) -> None:
-        """Start cleaning the rectangle drawn on the picture."""
+        """Start cleaning the rectangle(s) drawn on the picture.
+
+        ``areas`` is a list of picture-fraction rectangles; when given it
+        replaces the single ``x1``/``y1``/``x2``/``y2`` rectangle, and all
+        of them are sent in one zone-clean command so the robot cleans
+        them as a single job. Suction, mop and kind are global to that
+        job — the zone proto only carries a pass count per zone.
+        """
         if not self._novel_api:
             _LOGGER.warning("Zone cleaning not supported on legacy devices")
             return
         handler = getattr(self, "_map_handler", None)
-        quad = handler.picture_rect_quad(x1, y1, x2, y2) if handler else None
-        if not quad:
+        if handler is None:
             _LOGGER.error("No map frame for area clean")
             return
-        clean_type = {"vacuum": "sweep_only", "mop": "mop_only", "both": "sweep_and_mop"}.get(
-            kind or ""
-        )
+        rects = list(areas) if areas else [(x1, y1, x2, y2)]
+        quads = []
+        for rect in rects:
+            quad = handler.picture_rect_quad(rect[0], rect[1], rect[2], rect[3])
+            if quad:
+                quads.append(quad)
+        if not quads:
+            _LOGGER.error("No map frame for area clean")
+            return
+        clean_type = {
+            "vacuum": "sweep_only",
+            "mop": "mop_only",
+            "both": "sweep_and_mop",
+        }.get(kind or "")
         if clean_type:
             await self.set_clean_type(clean_type)
         if suction and kind != "mop":
@@ -549,9 +567,9 @@ class BaseDevice:
         if mop and kind != "vacuum":
             await self.set_mop_level(mop)
         map_id, releases = self._floor_ids()
-        command = encode_zone_clean_command(quad, clean_times, map_id, releases)
+        command = encode_zones_clean_command(quads, clean_times, map_id, releases)
         await self.send_command({self._dps_map["PLAY_PAUSE"]: command})
-        _LOGGER.info("Started area clean corners=%s", quad)
+        _LOGGER.info("Started area clean zones=%s corners=%s", len(quads), quads)
 
     async def set_zones(
         self,
